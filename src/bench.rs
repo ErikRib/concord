@@ -7,7 +7,7 @@ use rusqlite::TransactionBehavior;
 use uuid::{NoContext, Timestamp, Uuid};
 
 use crate::db::{self, Db, UserRecord};
-use crate::model::{Channel, Message, Server, User};
+use crate::model::{Channel, ChannelKind, Message, Server, User};
 use crate::state::now_ms;
 
 const CHANNELS: usize = 100;
@@ -36,7 +36,7 @@ pub fn run(n: usize) {
     println!("Teste de carga: {n} mensagens, {CHANNELS} canais, {USERS} pessoas\n");
 
     // Dados de base.
-    let channels: Vec<Channel> = (0..CHANNELS).map(|i| Channel { id: Uuid::new_v4(), name: format!("canal-{i}") }).collect();
+    let channels: Vec<Channel> = (0..CHANNELS).map(|i| Channel::new(&format!("canal-{i}"), ChannelKind::Text)).collect();
     let users: Vec<User> = (0..USERS)
         .map(|i| User { id: Uuid::new_v4(), name: format!("Pessoa {i}"), color: "#5865f2".into() })
         .collect();

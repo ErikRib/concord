@@ -220,12 +220,21 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
+    let servers = state.views_for(user_id);
+    let server_ids: Vec<Uuid> = servers.iter().map(|s| s.id).collect();
     let _ = out.send(ServerMsg::Ready {
         me: me.clone(),
-        servers: state.views_for(user_id),
+        servers,
         online: state.online_users(),
         is_admin: state.is_admin(user_id),
+        voice_enabled: state.voice.is_some(),
     });
+    for sid in server_ids {
+        let states = state.voice_states(sid);
+        if !states.is_empty() {
+            let _ = out.send(ServerMsg::VoiceStates { server_id: sid, states });
+        }
+    }
     state.send_all(ServerMsg::Presence { online: state.online_users() });
 
     // ~3 ações por segundo, com rajada de até 10.
@@ -244,20 +253,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     continue;
                 }
                 match serde_json::from_str::<ClientMsg>(&text) {
-                    Ok(ClientMsg::DeleteMyData) => match state.delete_user_data(me.id) {
-                        Ok(result) => {
-                            state.send_all(ServerMsg::UserPurged { user_id: me.id });
-                            for sid in result.servers_changed {
-                                state.emit(Event::ServerChanged(sid));
+                    Ok(ClientMsg::DeleteMyData) => {
+                        state.leave_voice(me.id, None);
+                        match state.delete_user_data(me.id) {
+                            Ok(result) => {
+                                state.send_all(ServerMsg::UserPurged { user_id: me.id });
+                                for sid in result.servers_changed {
+                                    state.emit(Event::ServerChanged(sid));
+                                }
+                                let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
+                                deleted = true;
+                                break;
                             }
-                            let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
-                            deleted = true;
-                            break;
+                            Err(e) => {
+                                let _ = out.send(error_message(e));
+                            }
                         }
-                        Err(e) => {
-                            let _ = out.send(error_message(e));
-                        }
-                    },
+                    }
                     Ok(cmd) => {
                         let mut cx = Ctx { state: &state, me: &mut me, conn_id, out: &out };
                         if let Err(e) = commands::handle(cmd, &mut cx) {
@@ -275,6 +287,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 
     forwarder.abort();
+    state.leave_voice(me.id, Some(conn_id));
     state.online.lock().unwrap().remove(&conn_id);
     if !deleted {
         state.touch(me.id);

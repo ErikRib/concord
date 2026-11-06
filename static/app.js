@@ -161,6 +161,20 @@ function dialog({ title, desc = "", fields = [], submit = "OK", danger = false, 
         ta.value = f.value ?? "";
         card.append(ta);
         inputs[f.name] = ta;
+      } else if (f.type === "key") {
+        // Captura a próxima tecla pressionada (ex.: atalho de apertar para falar).
+        const inp = el("input", "field");
+        inp.type = "text";
+        inp.readOnly = true;
+        inp.value = f.value ?? "";
+        inp.placeholder = "Clique e aperte uma tecla";
+        inp.onkeydown = (e) => {
+          if (e.key === "Escape" || e.key === "Enter") return;
+          e.preventDefault();
+          inp.value = e.code;
+        };
+        card.append(inp);
+        inputs[f.name] = inp;
       } else if (f.type === "copy") {
         const row = el("div", "copy-row");
         const inp = el("input", "field");
@@ -190,7 +204,7 @@ function dialog({ title, desc = "", fields = [], submit = "OK", danger = false, 
     card.append(actions);
 
     show("#modal");
-    (card.querySelector("input[type=text]:not([readonly]), textarea, select") || ok).focus();
+    (card.querySelector("input.field:not([readonly]), textarea, select") || ok).focus();
 
     function finish(result) {
       hide("#modal");
@@ -283,6 +297,8 @@ const state = {
   typing: new Map(), // channelId -> Map(userId -> { name, until })
   unread: new Set(),
   reports: new Map(), // serverId -> [ReportView]
+  voiceStates: new Map(), // serverId -> [VoiceStateView]
+  voiceEnabled: false,
   focus: null, // { server_id, channel_id } pedido pelo servidor
   panel: null, // painel aberto: "reports" | "bans"
 };
@@ -359,6 +375,12 @@ function handle(m) {
     case "ready":
       state.me = m.me;
       state.isAdmin = m.is_admin;
+      state.voiceEnabled = m.voice_enabled;
+      state.voiceStates.clear();
+      // O chat reconectou com a chamada ainda ativa: reafirma a presença na voz.
+      if (typeof voice !== "undefined" && voice.room && voice.channelId) {
+        send({ type: "voice_join", channel_id: voice.channelId });
+      }
       state.servers = m.servers;
       state.online = m.online;
       state.messages.clear();
@@ -487,6 +509,7 @@ function handle(m) {
     case "data_deleted":
       reconnect = false;
       clearLocalData();
+      disconnectRoom();
       // A conexão é encerrada logo em seguida; limpa a própria tela aqui.
       if (state.me) purgeUser(state.me.id);
       state.online = [];
@@ -497,11 +520,29 @@ function handle(m) {
       show("#goodbye");
       break;
 
+    case "voice_token":
+      onVoiceToken(m);
+      break;
+
+    case "voice_states":
+      state.voiceStates.set(m.server_id, m.states);
+      renderChannels();
+      renderVoiceView();
+      break;
+
+    case "voice_ended":
+      onVoiceEnded(m);
+      break;
+
     case "info":
       toast(m.message, true);
       break;
 
     case "error":
+      if (typeof voice !== "undefined" && voice.connecting) {
+        voice.connecting = false;
+        renderVoiceAll();
+      }
       toast(m.message);
       break;
   }
@@ -684,8 +725,10 @@ function userMenu(e, user) {
   if (!s || !state.me) return;
   const isMe = user.id === state.me.id;
   const role = roleIn(s, user.id);
+  const inMyCall = !isMe && voice.room?.getParticipantByIdentity(user.id);
   showMenu(e, [
     isMe && { label: "Mudar meu apelido", onClick: rename },
+    inMyCall && { label: `Volume de ${user.name} (${Math.round((vset.volumes[user.id] ?? 1) * 100)}%)`, onClick: () => setUserVolume(user) },
     !isMe && s.can_manage && role !== "owner" && {
       label: role === "mod" ? "Remover moderador" : "Tornar moderador",
       onClick: () => send({ type: "set_moderator", server_id: s.id, user_id: user.id, enabled: role !== "mod" }),
@@ -803,10 +846,11 @@ function ensureSelection() {
   const server = currentServer();
   if (server && !currentChannel()) {
     const last = load(`concord.lastChannel.${server.id}`, null);
-    state.channelId = server.channels.some((c) => c.id === last) ? last : server.channels[0]?.id ?? null;
+    const firstText = server.channels.find((c) => c.kind !== "voice") ?? server.channels[0];
+    state.channelId = server.channels.some((c) => c.id === last) ? last : firstText?.id ?? null;
   }
   if (!server) state.channelId = null;
-  if (state.channelId && !state.messages.has(state.channelId)) {
+  if (state.channelId && currentChannel()?.kind !== "voice" && !state.messages.has(state.channelId)) {
     send({ type: "fetch_history", channel_id: state.channelId });
   }
   store("concord.server", state.serverId);
@@ -838,7 +882,9 @@ function selectChannel(id) {
   state.unread.delete(id);
   store(`concord.lastChannel.${state.serverId}`, id);
   refresh();
-  $("#input").focus();
+  // Como no Discord: clicar num canal de voz já entra na chamada.
+  if (currentChannel()?.kind === "voice") voiceJoin(id);
+  else $("#input").focus();
 }
 
 // ---------- renderização ----------
@@ -855,31 +901,105 @@ function renderServers() {
   }
 }
 
+const ICON_MIC_OFF = "🔇";
+const ICON_DEAF = "🎧";
+
 function renderChannels() {
   const server = currentServer();
   $("#server-name").textContent = server?.name ?? "Nenhum servidor";
-  $("#add-channel").classList.toggle("hidden", !server?.can_moderate);
-  const list = $("#channel-list");
-  list.replaceChildren();
+  const box = $("#channels");
+  box.replaceChildren();
   if (!server) return;
-  for (const c of server.channels) {
-    let cls = c.id === state.channelId ? "active" : "";
-    if (state.unread.has(c.id)) cls += " unread";
-    const li = el("li", cls.trim() || null);
-    li.append(el("span", "ch-name", c.name));
-    if (server.can_moderate && server.channels.length > 1) {
-      const del = button("×", "ch-del", (e) => { e.stopPropagation(); deleteChannel(server, c); });
-      del.title = "Apagar canal";
-      li.append(del);
+
+  const section = (title, kind) => {
+    const channels = server.channels.filter((c) => (c.kind ?? "text") === kind);
+    const head = el("div", "section-title");
+    head.append(el("span", null, title));
+    if (server.can_moderate) {
+      const add = button("+", null, () => createChannel(server, kind));
+      add.title = kind === "voice" ? "Criar canal de voz" : "Criar canal de texto";
+      head.append(add);
     }
-    li.onclick = () => selectChannel(c.id);
-    list.append(li);
+    const list = el("ul", "channel-list");
+    for (const c of channels) list.append(channelItem(server, c));
+    box.append(head, list);
+  };
+  section("Canais de texto", "text");
+  section("Canais de voz", "voice");
+}
+
+function channelItem(server, c) {
+  const li = el("li");
+  const row = el("div", "ch-row" + (c.id === state.channelId ? " active" : "") + (state.unread.has(c.id) ? " unread" : ""));
+  row.classList.add(c.kind === "voice" ? "voice" : "text");
+  const name = el("span", "ch-name", c.name);
+  row.append(name);
+  if (c.kind === "voice" && c.user_limit) {
+    const n = (state.voiceStates.get(server.id) ?? []).filter((s) => s.channel_id === c.id).length;
+    row.append(el("span", "ch-count", `${n}/${c.user_limit}`));
   }
+  if (server.can_moderate) {
+    const gear = button("⚙", "ch-tool", (e) => { e.stopPropagation(); channelSettings(server, c); });
+    gear.title = "Configurações do canal";
+    row.append(gear);
+    if (server.channels.length > 1) {
+      const del = button("×", "ch-tool", (e) => { e.stopPropagation(); deleteChannel(server, c); });
+      del.title = "Apagar canal";
+      row.append(del);
+    }
+  }
+  row.onclick = () => selectChannel(c.id);
+  li.append(row);
+
+  if (c.kind === "voice") {
+    if (c.status) li.append(el("div", "ch-voice-status", c.status));
+    const people = (state.voiceStates.get(server.id) ?? []).filter((s) => s.channel_id === c.id);
+    if (people.length) {
+      const ul = el("ul", "ch-voice-users");
+      for (const s of people) {
+        const u = el("li");
+        const a = avatar(s.user);
+        a.classList.add("tiny");
+        a.dataset.speaker = s.user.id;
+        const nm = el("span", "vu-name", s.user.name);
+        u.append(a, nm);
+        if (s.streaming) u.append(el("span", "live-badge small", "AO VIVO"));
+        if (s.camera) u.append(el("span", "vu-flag", "📷"));
+        if (s.deafened) u.append(el("span", "vu-flag", ICON_DEAF));
+        else if (s.muted) u.append(el("span", "vu-flag", ICON_MIC_OFF));
+        u.onclick = (e) => userMenu(e, s.user);
+        ul.append(u);
+      }
+      li.append(ul);
+    }
+  }
+  return li;
+}
+
+async function createChannel(server, kind) {
+  const voiceKind = kind === "voice";
+  const raw = await askText({
+    title: voiceKind ? "Criar canal de voz" : "Criar canal de texto",
+    desc: `Em ${server.name}`,
+    placeholder: voiceKind ? "Sala de jogos" : "novo-canal",
+    maxLength: 32,
+    submit: "Criar",
+  });
+  if (raw) send({ type: "create_channel", server_id: server.id, name: raw, kind });
 }
 
 function renderChat(scroll) {
   const ch = currentChannel();
+  const isVoice = ch?.kind === "voice";
+  $("#channel-icon").textContent = isVoice ? "🔊" : "#";
   $("#channel-name").textContent = ch?.name ?? "";
+  $("#channel-status").textContent = isVoice && ch.status ? ch.status : "";
+  $("#text-view").classList.toggle("hidden", isVoice);
+  $("#voice-view").classList.toggle("hidden", !isVoice);
+  if (isVoice) {
+    renderVoiceView();
+    return;
+  }
   $("#input").placeholder = ch ? `Conversar em #${ch.name}` : "";
   $("#input").disabled = !ch;
   renderMessages(scroll);
@@ -1056,14 +1176,8 @@ function renderMe() {
 }
 
 // ---------- ações ----------
-$("#add-channel").onclick = async () => {
-  const server = currentServer();
-  if (!server) return;
-  const raw = await askText({ title: "Criar canal", desc: `Em ${server.name}`, placeholder: "novo-canal", maxLength: 32, submit: "Criar" });
-  if (raw) send({ type: "create_channel", server_id: server.id, name: raw });
-};
-
-$("#rename").onclick = rename;
+$("#me-info").onclick = rename;
+$("#me-avatar").onclick = rename;
 
 const input = $("#input");
 let lastTypingSent = 0;

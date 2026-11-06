@@ -20,6 +20,11 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 | Denúncias (categoria, detalhes, quem denunciou) | Titular | Moderação de conteúdo | Legítimo interesse (art. 7º, IX) | Servidor; quem denunciou **nunca é mostrado** aos moderadores | Até ser resolvida ou por `CONCORD_RETENCAO_DIAS` |
 | Banimentos (servidor, motivo, data) | Moderador | Afastar quem descumpre regras | Legítimo interesse | Servidor; visível aos moderadores e ao próprio banido | `CONCORD_RETENCAO_DIAS` (o banimento expira) |
 | Registro de moderação (ação, autor, alvo, data; **sem conteúdo**) | Sistema | Responsabilização e revisão de decisões (art. 6º, X) | Legítimo interesse | Servidor | `CONCORD_RETENCAO_DIAS` |
+| Áudio, câmera e tela | Titular, ao ligar cada um | Chamadas ao vivo | Consentimento | **Não é armazenado**: trafega criptografado (DTLS-SRTP) pelo LiveKit | Só durante a transmissão |
+| Presença em canal de voz (canal, mudo, câmera, ao vivo) | Sistema | Mostrar quem está na chamada | Consentimento | **Só em memória** | Até sair da chamada |
+| Status do canal de voz e quem o definiu | Titular | Informar o que acontece no canal | Consentimento | Banco; quem definiu **não é mostrado** | Apagado quando o canal esvazia |
+| IP na chamada | Conexão de mídia | Entregar áudio e vídeo | Necessário ao serviço | LiveKit, em memória, com log em nível "warn", sem IP de participante | Duração da chamada |
+| Preferências de voz (dispositivos, volumes, tecla) | Titular | Conforto | — | **Apenas no navegador** | Até limpar o navegador ou apagar os dados |
 
 ### Teste de legítimo interesse (art. 10)
 
@@ -69,6 +74,13 @@ e dados de navegação.
 | Vazamento de servidor privado | Cada conexão filtra os eventos pelo que a pessoa pode ver (`Audience` e `ServerView`). Membros, banidos e convite só chegam a quem modera. Admins da instância não veem servidores privados |
 | Adivinhar convites | Código aleatório de 12 caracteres (~70 bits), limite de taxa e troca do código a qualquer momento |
 | Retaliação contra quem denuncia | O id de quem denunciou nunca sai do servidor |
+| Entrar em chamada sem permissão | Só o Concord emite tokens do LiveKit, válidos por 10 minutos, presos a uma sala e a uma identidade, e só para quem vê o servidor, não está banido e cabe no limite. Testado: o LiveKit recusa token adulterado |
+| Segredo do LiveKit vazar | No uso local, é gerado a cada execução e passado ao LiveKit por variável de ambiente, nunca pela linha de comando nem em arquivo |
+| Mídia interceptada | WebRTC com DTLS-SRTP obrigatório. Em produção, sinalização por `wss://` |
+| Microfone, câmera ou tela usados por terceiros | `Permissions-Policy` libera microfone, câmera e captura de tela só para o próprio Concord. A CSP só libera conexão com o LiveKit configurado |
+| Quem foi banido continuar na chamada | Banimento, saída de servidor privado e exclusão de canal ou servidor encerram a sessão de voz na hora |
+| Exposição de terceiros na transmissão de tela | Aviso antes de transmitir; as transmissões só são baixadas por quem clica em "Assistir" |
+| LiveKit órfão após uma queda | Job Object do Windows encerra o LiveKit junto com o Concord |
 | Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16), em lotes que não travam o chat. A retenção usa a ordem cronológica dos ids UUIDv7 |
 
 ## 5. Pendências para colocar em produção
@@ -96,3 +108,8 @@ Estes itens dependem de quem vai operar a instância e não podem ser resolvidos
    moderado se `CONCORD_ADMINS` estiver definido. Publique regras de convivência e um canal para
    contestar decisões de moderação.
 9. **Relatório de impacto (RIPD, art. 38).** Recomendado se o uso crescer ou se houver dados sensíveis.
+   Com voz e câmera, a voz e a imagem do rosto são dados pessoais. Não há reconhecimento facial
+   nem biometria, mas um RIPD passa a ser ainda mais recomendável.
+10. **LiveKit em produção.** Use HTTPS (`wss://`), TURN para quem está atrás de firewall, logs sem
+    IP de participante, e coloque o LiveKit no inventário de suboperadores se ele for hospedado por
+    terceiros (por exemplo, LiveKit Cloud).

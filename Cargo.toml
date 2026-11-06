@@ -11,8 +11,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 sha2 = "0.10"
+# Assinatura dos tokens de acesso do LiveKit (JWT HS256).
+hmac = "0.12"
+base64 = "0.22"
 # SQLite embutido no executável (compilado junto, sem instalação separada).
 rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
+
+[target.'cfg(windows)'.dependencies]
+# Job Object: o Windows encerra o LiveKit junto com o Concord, mesmo numa queda.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects"] }
 
 [profile.release]
 lto = "thin"

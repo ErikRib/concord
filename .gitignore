@@ -5,3 +5,6 @@ concord-data.json.migrado
 *.db
 *.db-wal
 *.db-shm
+/tools/
+/tests/node_modules/
+/tests/package-lock.json

@@ -12,10 +12,77 @@ pub struct User {
     pub color: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    #[default]
+    Text,
+    Voice,
+}
+
+impl ChannelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChannelKind::Text => "text",
+            ChannelKind::Voice => "voice",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        if s == "voice" {
+            ChannelKind::Voice
+        } else {
+            ChannelKind::Text
+        }
+    }
+}
+
+fn default_bitrate() -> u32 {
+    64
+}
+
+fn default_quality() -> String {
+    "auto".into()
+}
+
+pub const VIDEO_QUALITIES: &[&str] = &["auto", "720p"];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub kind: ChannelKind,
+    /// Voz: limite de pessoas (0 = sem limite).
+    #[serde(default)]
+    pub user_limit: u32,
+    /// Voz: taxa de bits do áudio em kbps.
+    #[serde(default = "default_bitrate")]
+    pub bitrate: u32,
+    /// Voz: qualidade da câmera ("auto" ou "720p").
+    #[serde(default = "default_quality")]
+    pub video_quality: String,
+    /// Voz: status do canal (ex.: "jogando X"). Some quando o canal esvazia.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Quem definiu o status (para exportação e eliminação). Nunca vai ao cliente.
+    #[serde(skip)]
+    pub status_by: Option<Uuid>,
+}
+
+impl Channel {
+    pub fn new(name: &str, kind: ChannelKind) -> Self {
+        Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            kind,
+            user_limit: 0,
+            bitrate: default_bitrate(),
+            video_quality: default_quality(),
+            status: None,
+            status_by: None,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -206,8 +273,27 @@ pub enum ClientMsg {
     RegenerateInvite { server_id: Uuid },
     JoinServer { code: String },
     LeaveServer { server_id: Uuid },
-    CreateChannel { server_id: Uuid, name: String },
+    CreateChannel {
+        server_id: Uuid,
+        name: String,
+        #[serde(default)]
+        kind: ChannelKind,
+    },
+    UpdateChannel {
+        channel_id: Uuid,
+        name: Option<String>,
+        user_limit: Option<u32>,
+        bitrate: Option<u32>,
+        video_quality: Option<String>,
+    },
     DeleteChannel { channel_id: Uuid },
+    /// Pede para entrar num canal de voz (o servidor devolve um token do LiveKit).
+    VoiceJoin { channel_id: Uuid },
+    VoiceLeave,
+    /// Estado visível para os outros na barra lateral.
+    VoiceUpdate { muted: bool, deafened: bool, streaming: bool, camera: bool },
+    /// Status do canal de voz; texto vazio limpa.
+    SetVoiceStatus { channel_id: Uuid, status: String },
     SetModerator { server_id: Uuid, user_id: Uuid, enabled: bool },
     BanUser {
         server_id: Uuid,
@@ -245,7 +331,7 @@ pub enum ClientMsg {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Ready { me: User, servers: Vec<ServerView>, online: Vec<User>, is_admin: bool },
+    Ready { me: User, servers: Vec<ServerView>, online: Vec<User>, is_admin: bool, voice_enabled: bool },
     /// O titular ainda não aceitou a versão atual da política.
     ConsentRequired { version: u32, retention_days: u32 },
     /// Servidor novo ou alterado, já filtrado para quem recebe.
@@ -268,8 +354,32 @@ pub enum ServerMsg {
     UserPurged { user_id: Uuid },
     /// Um titular mudou apelido/cor: clientes atualizam as mensagens antigas.
     ProfileUpdated { user: User },
+    /// Autorização para entrar na sala do LiveKit. `url` nulo: o cliente usa
+    /// o LiveKit local na porta 7880 do mesmo host.
+    VoiceToken {
+        server_id: Uuid,
+        channel_id: Uuid,
+        url: Option<String>,
+        token: String,
+        bitrate: u32,
+        video_quality: String,
+    },
+    /// Quem está em cada canal de voz do servidor.
+    VoiceStates { server_id: Uuid, states: Vec<VoiceStateView> },
+    /// A sessão de voz desta pessoa foi encerrada pelo servidor (ex.: canal apagado).
+    VoiceEnded { reason: String },
     Info { message: String },
     Error { message: String },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VoiceStateView {
+    pub channel_id: Uuid,
+    pub user: User,
+    pub muted: bool,
+    pub deafened: bool,
+    pub streaming: bool,
+    pub camera: bool,
 }
 
 /// Quem deve receber um evento.

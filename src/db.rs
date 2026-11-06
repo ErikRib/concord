@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::model::{Ban, Channel, Message, ModLogEntry, Report, ReportView, Server, User};
+use crate::model::{Ban, Channel, ChannelKind, Message, ModLogEntry, Report, ReportView, Server, User};
 
 const READERS: usize = 4;
 
@@ -134,6 +134,21 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX mod_log_actor ON mod_log(actor);
     CREATE INDEX mod_log_target ON mod_log(target);
     "#,
+    // 2: canais de voz (tipo, limite, taxa de bits, qualidade de vídeo e status)
+    r#"
+    ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE channels ADD COLUMN user_limit INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE channels ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 64;
+    ALTER TABLE channels ADD COLUMN video_quality TEXT NOT NULL DEFAULT 'auto';
+    ALTER TABLE channels ADD COLUMN status TEXT;
+    ALTER TABLE channels ADD COLUMN status_by BLOB;
+    CREATE INDEX channels_status_by ON channels(status_by) WHERE status_by IS NOT NULL;
+    -- Todo servidor existente ganha um canal de voz "Geral".
+    INSERT INTO channels (id, server_id, name, position, kind)
+        SELECT randomblob(16), s.id, 'Geral',
+               (SELECT COALESCE(MAX(position), 0) + 1 FROM channels c WHERE c.server_id = s.id), 'voice'
+        FROM servers s;
+    "#,
 ];
 
 fn configure(c: &Connection) -> rusqlite::Result<()> {
@@ -230,12 +245,25 @@ pub fn load_cache(c: &Connection) -> rusqlite::Result<Cache> {
         .collect::<Result<_, _>>()?;
     let index: HashMap<Uuid, usize> = servers.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
-    let mut stmt = c.prepare("SELECT server_id, id, name FROM channels ORDER BY position, rowid")?;
+    let mut stmt = c.prepare(
+        "SELECT server_id, id, name, kind, user_limit, bitrate, video_quality, status, status_by
+         FROM channels ORDER BY position, rowid",
+    )?;
     let mut rows = stmt.query([])?;
     while let Some(r) = rows.next()? {
         let sid: Uuid = r.get(0)?;
         if let Some(&i) = index.get(&sid) {
-            servers[i].channels.push(Channel { id: r.get(1)?, name: r.get(2)? });
+            let kind: String = r.get(3)?;
+            servers[i].channels.push(Channel {
+                id: r.get(1)?,
+                name: r.get(2)?,
+                kind: ChannelKind::parse(&kind),
+                user_limit: r.get(4)?,
+                bitrate: r.get(5)?,
+                video_quality: r.get(6)?,
+                status: r.get(7)?,
+                status_by: r.get(8)?,
+            });
         }
     }
     for (table, which) in [("server_members", 0), ("server_moderators", 1)] {
@@ -332,8 +360,31 @@ pub fn delete_server(c: &Connection, id: Uuid) -> rusqlite::Result<()> {
 
 pub fn insert_channel(c: &Connection, server_id: Uuid, ch: &Channel, position: i64) -> rusqlite::Result<()> {
     c.execute(
-        "INSERT INTO channels (id, server_id, name, position) VALUES (?1, ?2, ?3, ?4)",
-        params![ch.id, server_id, ch.name, position],
+        "INSERT INTO channels (id, server_id, name, position, kind, user_limit, bitrate, video_quality, status, status_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            ch.id,
+            server_id,
+            ch.name,
+            position,
+            ch.kind.as_str(),
+            ch.user_limit,
+            ch.bitrate,
+            ch.video_quality,
+            ch.status,
+            ch.status_by
+        ],
+    )?;
+    Ok(())
+}
+
+/// Grava nome, configurações e status do canal.
+pub fn update_channel(c: &Connection, ch: &Channel) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE channels SET name = ?2, user_limit = ?3, bitrate = ?4, video_quality = ?5,
+                             status = ?6, status_by = ?7
+         WHERE id = ?1",
+        params![ch.id, ch.name, ch.user_limit, ch.bitrate, ch.video_quality, ch.status, ch.status_by],
     )?;
     Ok(())
 }
@@ -584,6 +635,7 @@ pub fn delete_user_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<usize> {
     c.execute("DELETE FROM server_members WHERE user_id = ?1", [uid])?;
     c.execute("DELETE FROM server_moderators WHERE user_id = ?1", [uid])?;
     c.execute("DELETE FROM bans WHERE user_id = ?1", [uid])?;
+    c.execute("UPDATE channels SET status = NULL, status_by = NULL WHERE status_by = ?1", [uid])?;
     c.execute("UPDATE mod_log SET actor = NULL WHERE actor = ?1", [uid])?;
     c.execute("UPDATE mod_log SET target = NULL WHERE target = ?1", [uid])?;
     c.execute("DELETE FROM users WHERE id = ?1", [uid])?;

@@ -14,13 +14,27 @@ use uuid::Uuid;
 
 use crate::db::{self, Cache, Db, UserRecord};
 use crate::model::{
-    new_invite_code, Audience, BanView, Channel, Event, ModLogEntry, ReportView, Server, ServerMsg,
-    ServerView, User,
+    new_invite_code, Audience, BanView, Channel, ChannelKind, Event, ModLogEntry, ReportView, Server,
+    ServerMsg, ServerView, User, VoiceStateView,
 };
+use crate::voice::LiveKit;
+
+/// Uma pessoa num canal de voz. Só em memória: nada disso é gravado.
+#[derive(Clone)]
+pub struct VoiceSession {
+    pub conn_id: Uuid,
+    pub server_id: Uuid,
+    pub channel_id: Uuid,
+    pub user: User,
+    pub muted: bool,
+    pub deafened: bool,
+    pub streaming: bool,
+    pub camera: bool,
+}
 
 /// Versão da política de privacidade. Aumente ao mudar a política:
 /// todos precisarão aceitar de novo (LGPD art. 8º, §6º e art. 9º, §2º).
-pub const POLICY_VERSION: u32 = 2;
+pub const POLICY_VERSION: u32 = 3;
 pub const POLICY_UPDATED_AT: &str = "06/11/2026";
 
 /// Quantas mensagens o cliente recebe por página de histórico.
@@ -203,11 +217,21 @@ pub struct AppState {
     pub online: Mutex<HashMap<Uuid, User>>,
     pub connections: AtomicUsize,
     pub tx: broadcast::Sender<Event>,
+    /// LiveKit (voz). `None`: canais de voz desativados.
+    pub voice: Option<LiveKit>,
+    /// Sessões de voz por pessoa (id pseudônimo).
+    pub voice_sessions: Mutex<HashMap<Uuid, VoiceSession>>,
 }
 
 impl AppState {
-    /// Abre o banco, migra o esquema e, se for a primeira vez, importa o JSON antigo.
+    /// Sem voz (usado nos testes).
+    #[cfg(test)]
     pub fn open(db_path: &Path, legacy_json: &Path, config: Config) -> Result<Self, String> {
+        Self::open_with_voice(db_path, legacy_json, config, None)
+    }
+
+    /// Abre o banco, migra o esquema e, se for a primeira vez, importa o JSON antigo.
+    pub fn open_with_voice(db_path: &Path, legacy_json: &Path, config: Config, voice: Option<LiveKit>) -> Result<Self, String> {
         let db = Db::open(db_path).map_err(|e| format!("Erro ao abrir {}: {e}", db_path.display()))?;
         {
             let conn = db.writer.lock().unwrap();
@@ -231,7 +255,88 @@ impl AppState {
             online: Mutex::new(HashMap::new()),
             connections: AtomicUsize::new(0),
             tx,
+            voice,
+            voice_sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    // ---------- voz ----------
+
+    pub fn voice_states(&self, sid: Uuid) -> Vec<VoiceStateView> {
+        let mut states: Vec<VoiceStateView> = self
+            .voice_sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|v| v.server_id == sid)
+            .map(|v| VoiceStateView {
+                channel_id: v.channel_id,
+                user: v.user.clone(),
+                muted: v.muted,
+                deafened: v.deafened,
+                streaming: v.streaming,
+                camera: v.camera,
+            })
+            .collect();
+        states.sort_by_key(|s| s.user.name.to_lowercase());
+        states
+    }
+
+    /// Avisa quem vê o servidor sobre quem está em cada canal de voz.
+    pub fn emit_voice(&self, sid: Uuid) {
+        let states = self.voice_states(sid);
+        self.emit(Event::Send(Audience::Server(sid), ServerMsg::VoiceStates { server_id: sid, states }));
+    }
+
+    /// Tira a pessoa do canal de voz. Com `conn_id`, só se a sessão for daquela
+    /// conexão (outra aba pode ter assumido). Se o canal esvaziar, o status some.
+    pub fn leave_voice(&self, user_id: Uuid, conn_id: Option<Uuid>) {
+        let left = {
+            let mut sessions = self.voice_sessions.lock().unwrap();
+            match sessions.get(&user_id) {
+                Some(s) if conn_id.is_none_or(|c| c == s.conn_id) => sessions.remove(&user_id),
+                _ => None,
+            }
+        };
+        let Some(session) = left else { return };
+        let empty = !self.voice_sessions.lock().unwrap().values().any(|v| v.channel_id == session.channel_id);
+        if empty {
+            self.clear_voice_status(session.channel_id);
+        }
+        self.emit_voice(session.server_id);
+    }
+
+    /// Minimização: o status existe só enquanto há gente no canal.
+    pub fn clear_voice_status(&self, channel_id: Uuid) {
+        let result = self.mutate(|cache, tx| {
+            let Some(i) = cache.server_index_of_channel(channel_id) else { return Ok(None) };
+            let Some(ch) = cache.servers[i].channels.iter_mut().find(|c| c.id == channel_id) else { return Ok(None) };
+            if ch.status.is_none() {
+                return Ok(None);
+            }
+            let mut updated = ch.clone();
+            updated.status = None;
+            updated.status_by = None;
+            db::update_channel(tx, &updated)?;
+            *ch = updated;
+            Ok(Some(cache.servers[i].id))
+        });
+        match result {
+            Ok(Some(sid)) => self.emit(Event::ServerChanged(sid)),
+            Ok(None) => {}
+            Err(e) => eprintln!("Erro ao limpar status do canal de voz: {e:?}"),
+        }
+    }
+
+    /// Encerra as sessões de voz de quem não pode mais estar no canal
+    /// (canal ou servidor apagado, banimento, saída de servidor privado).
+    pub fn kick_voice_where(&self, should_kick: impl Fn(&VoiceSession) -> bool, reason: &str) {
+        let kicked: Vec<VoiceSession> =
+            self.voice_sessions.lock().unwrap().values().filter(|s| should_kick(s)).cloned().collect();
+        for s in kicked {
+            self.emit(Event::Send(Audience::User(s.user.id), ServerMsg::VoiceEnded { reason: reason.into() }));
+            self.leave_voice(s.user.id, None);
+        }
     }
 
     /// Executa uma alteração de forma atômica: trava o cache, abre uma transação,
@@ -436,6 +541,13 @@ impl AppState {
                 "em": iso_utc(e.at),
             }))
             .collect();
+        let status_voz: Vec<_> = cache
+            .servers
+            .iter()
+            .flat_map(|s| s.channels.iter().map(move |c| (s, c)))
+            .filter(|(_, c)| c.status_by == Some(uid))
+            .map(|(s, c)| json!({ "servidor": s.name, "canal": c.name, "status": c.status }))
+            .collect();
         let rec = cache.users.get(&uid);
         Ok(json!({
             "observacao": "Datas em UTC (horário de Brasília = UTC-3).",
@@ -460,6 +572,8 @@ impl AppState {
             "denuncias_feitas": denuncias,
             "banimentos_recebidos": banimentos,
             "registro_de_moderacao": moderacao,
+            "status_de_canais_de_voz": status_voz,
+            "voz": "Áudio, vídeo e transmissões de tela não são gravados. Quem está em cada canal de voz fica só em memória.",
         }))
     }
 
@@ -501,7 +615,13 @@ impl AppState {
                 s.members.retain(|&m| m != uid);
                 s.moderators.retain(|&m| m != uid);
                 s.bans.retain(|b| b.user_id != uid);
-                if before != (s.owner_id, s.members.len(), s.moderators.len(), s.bans.len()) {
+                let mut status_cleared = false;
+                for c in s.channels.iter_mut().filter(|c| c.status_by == Some(uid)) {
+                    c.status = None;
+                    c.status_by = None;
+                    status_cleared = true;
+                }
+                if status_cleared || before != (s.owner_id, s.members.len(), s.moderators.len(), s.bans.len()) {
                     servers_changed.push(s.id);
                 }
             }
@@ -566,11 +686,14 @@ impl AppState {
 
 /// Servidor da instância: público e sem dono (moderado pelos administradores).
 fn seed_default_server(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    let ch = |name: &str| Channel { id: Uuid::new_v4(), name: name.into() };
     let server = Server {
         id: Uuid::new_v4(),
         name: "Concord".into(),
-        channels: vec![ch("geral"), ch("off-topic")],
+        channels: vec![
+            Channel::new("geral", ChannelKind::Text),
+            Channel::new("off-topic", ChannelKind::Text),
+            Channel::new("Geral", ChannelKind::Voice),
+        ],
         owner_id: None,
         public: true,
         members: vec![],

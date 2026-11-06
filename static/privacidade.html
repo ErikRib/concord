@@ -15,9 +15,9 @@
     <p>Esta política explica, em linguagem simples, como o Concord trata dados pessoais, em conformidade com a
       Lei Geral de Proteção de Dados (Lei nº 13.709/2018, “LGPD”).</p>
 
-    <h2>O que mudou na versão 2</h2>
-    <p>Incluímos servidores privados com convite, papéis de dono e moderador, denúncias e banimentos, e o registro
-      das ações de moderação. Os itens 2 a 7 explicam o que isso significa para seus dados.</p>
+    <h2>O que mudou na versão 3</h2>
+    <p>Incluímos <strong>canais de voz</strong>, com microfone, câmera e transmissão de tela. O item 2A explica
+      como isso funciona. A versão 2 incluiu servidores privados, moderação, denúncias e banimentos.</p>
 
     <h2>1. Quem é o responsável</h2>
     <p><strong>Controlador:</strong> {{CONTROLADOR}}<br>
@@ -42,10 +42,30 @@
     <p><strong>Atenção:</strong> evite escrever dados pessoais sensíveis (saúde, religião, opinião política etc.)
       ou dados de outras pessoas nas mensagens. Tudo o que você escreve fica visível para quem participa do servidor.</p>
 
+    <h2>2A. Canais de voz, câmera e transmissão de tela</h2>
+    <ul>
+      <li><strong>Nada é gravado.</strong> Áudio, vídeo da câmera e transmissões de tela vão ao vivo, criptografados
+        (DTLS-SRTP), do seu navegador para o servidor de mídia (LiveKit) e dele para as pessoas da chamada.
+        Nenhum desses conteúdos é armazenado;</li>
+      <li>O microfone, a câmera e a captura de tela só são usados depois que <strong>você</strong> autoriza no
+        navegador e liga cada um. Você pode desligar a qualquer momento;</li>
+      <li><strong>Quem está em cada canal de voz</strong> (e se está mudo, com câmera ou transmitindo) aparece para o
+        servidor enquanto você está na chamada. Isso fica só em memória e some quando você sai;</li>
+      <li>O <strong>status do canal de voz</strong> (ex.: “jogando xadrez”) é guardado com a indicação de quem o
+        definiu, mas quem definiu não é mostrado. O status é apagado sozinho quando o canal fica vazio;</li>
+      <li>Para a mídia chegar até você, o servidor de mídia usa o seu <strong>endereço IP</strong> durante a chamada.
+        Ele é configurado para não registrar IPs em log;</li>
+      <li><strong>Transmissão de tela:</strong> antes de transmitir, avisamos que a tela pode mostrar dados de outras
+        pessoas. A responsabilidade pelo que aparece na sua tela é sua;</li>
+      <li>Preferências de voz (dispositivos, volume de cada pessoa, tecla de apertar para falar) ficam só no seu
+        navegador.</li>
+    </ul>
+
     <h2>3. Para que usamos (finalidade)</h2>
     <ul>
       <li>Permitir a conversa: mostrar suas mensagens, seu apelido e quem está online;</li>
       <li>Controlar quem pode ver cada servidor (públicos e privados);</li>
+      <li>Permitir chamadas de voz e vídeo e transmissões de tela ao vivo, sem gravação;</li>
       <li>Moderar: permitir que donos e moderadores removam conteúdo e afastem quem descumpre as regras,
         e registrar essas ações para que possam ser revistas.</li>
     </ul>

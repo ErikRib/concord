@@ -8,12 +8,12 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::model::{
-    new_invite_code, Audience, Ban, Channel, ClientMsg, Event, Message, Report, Server, ServerMsg,
-    User, REPORT_CATEGORIES,
+    new_invite_code, Audience, Ban, Channel, ChannelKind, ClientMsg, Event, Message, Report, Server,
+    ServerMsg, User, REPORT_CATEGORIES, VIDEO_QUALITIES,
 };
 use crate::state::{
-    log, now_ms, AppState, Fail, Res, HISTORY_PAGE, MAX_CHANNELS_PER_SERVER, MAX_MEMBERS_PER_SERVER,
-    MAX_OWNED_SERVERS, MAX_REPORTS_PER_SERVER, MAX_SERVERS,
+    log, now_ms, AppState, Fail, Res, VoiceSession, HISTORY_PAGE, MAX_CHANNELS_PER_SERVER,
+    MAX_MEMBERS_PER_SERVER, MAX_OWNED_SERVERS, MAX_REPORTS_PER_SERVER, MAX_SERVERS,
 };
 use crate::ws::Out;
 
@@ -47,6 +47,13 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
             cx.me.name = clean_name(&name);
             cx.me.color = clean_color(&color);
             st.online.lock().unwrap().insert(cx.conn_id, cx.me.clone());
+            let voice_server = st.voice_sessions.lock().unwrap().get_mut(&uid).map(|s| {
+                s.user = cx.me.clone();
+                s.server_id
+            });
+            if let Some(sid) = voice_server {
+                st.emit_voice(sid);
+            }
             if st.update_profile(cx.me)? {
                 st.send_all(ServerMsg::ProfileUpdated { user: cx.me.clone() });
                 // Listas de membros de servidores privados mostram o nome atual.
@@ -69,11 +76,11 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
         // ---------- servidores ----------
         ClientMsg::CreateServer { name, public } => {
             let name = valid_server_name(&name)?;
-            let channel = Channel { id: Uuid::new_v4(), name: "geral".into() };
+            let channel = Channel::new("geral", ChannelKind::Text);
             let server = Server {
                 id: Uuid::new_v4(),
                 name,
-                channels: vec![channel.clone()],
+                channels: vec![channel.clone(), Channel::new("Geral", ChannelKind::Voice)],
                 owner_id: Some(uid),
                 public,
                 members: vec![uid],
@@ -116,6 +123,11 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 cache.servers[i] = s;
                 Ok(())
             })?;
+            // Ficou privado: quem não é membro sai da voz. (A cópia solta o cache antes.)
+            let server = st.cache.lock().unwrap().server(server_id).cloned();
+            if let Some(s) = server {
+                st.kick_voice_where(|v| v.server_id == server_id && !s.can_view(v.user.id), "O servidor ficou privado");
+            }
             st.emit(Event::ServerChanged(server_id));
         }
 
@@ -131,6 +143,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 cache.servers.remove(i);
                 Ok(())
             })?;
+            st.kick_voice_where(|v| v.server_id == server_id, "O servidor foi apagado");
             st.emit(Event::ServerDeleted(server_id));
         }
 
@@ -188,16 +201,20 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 s.moderators.retain(|&m| m != uid);
                 Ok(())
             })?;
+            let server = st.cache.lock().unwrap().server(server_id).cloned();
+            if let Some(s) = server {
+                st.kick_voice_where(|v| v.server_id == server_id && !s.can_view(v.user.id), "Você saiu do servidor");
+            }
             st.emit(Event::ServerChanged(server_id));
         }
 
         // ---------- canais ----------
-        ClientMsg::CreateChannel { server_id, name } => {
-            let name = clean_channel_name(&name);
+        ClientMsg::CreateChannel { server_id, name, kind } => {
+            let name = channel_name_for(kind, &name);
             if name.is_empty() {
                 return Err("Nome de canal inválido".into());
             }
-            let channel = Channel { id: Uuid::new_v4(), name };
+            let channel = Channel::new(&name, kind);
             let cid = channel.id;
             st.mutate(|cache, tx| {
                 let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
@@ -233,8 +250,151 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 cache.servers[i].channels.retain(|c| c.id != channel_id);
                 Ok(sid)
             })?;
+            st.kick_voice_where(|v| v.channel_id == channel_id, "O canal de voz foi apagado");
             st.emit(Event::ServerChanged(sid));
             st.emit(Event::ReportsChanged(sid));
+        }
+
+        ClientMsg::UpdateChannel { channel_id, name, user_limit, bitrate, video_quality } => {
+            if user_limit.is_some_and(|l| l > 99) {
+                return Err("O limite de pessoas vai de 0 (sem limite) a 99".into());
+            }
+            if bitrate.is_some_and(|b| !(8..=384).contains(&b)) {
+                return Err("A taxa de bits do áudio vai de 8 a 384 kbps".into());
+            }
+            if video_quality.as_deref().is_some_and(|q| !VIDEO_QUALITIES.contains(&q)) {
+                return Err("Qualidade de vídeo inválida".into());
+            }
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                if !cache.servers[i].can_moderate(uid, admin) {
+                    return no_permission();
+                }
+                let sid = cache.servers[i].id;
+                let pos = cache.servers[i].channels.iter().position(|c| c.id == channel_id).ok_or("Canal não encontrado")?;
+                let mut ch = cache.servers[i].channels[pos].clone();
+                if let Some(n) = name {
+                    let n = channel_name_for(ch.kind, &n);
+                    if n.is_empty() {
+                        return Err("Nome de canal inválido".into());
+                    }
+                    ch.name = n;
+                }
+                if let Some(l) = user_limit {
+                    ch.user_limit = l;
+                }
+                if let Some(b) = bitrate {
+                    ch.bitrate = b;
+                }
+                if let Some(q) = video_quality {
+                    ch.video_quality = q;
+                }
+                db::update_channel(tx, &ch)?;
+                log(tx, sid, Some(uid), "canal_alterado", None, "")?;
+                cache.servers[i].channels[pos] = ch;
+                Ok(sid)
+            })?;
+            st.emit(Event::ServerChanged(sid));
+        }
+
+        // ---------- voz ----------
+        ClientMsg::VoiceJoin { channel_id } => {
+            let lk = st.voice.as_ref().ok_or("Os canais de voz estão desativados nesta instância")?;
+            let (sid, ch, moderate) = {
+                let cache = st.cache.lock().unwrap();
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
+                if !s.can_view(uid) {
+                    return no_permission();
+                }
+                let ch = s.channels.iter().find(|c| c.id == channel_id).cloned().ok_or("Canal não encontrado")?;
+                if ch.kind != ChannelKind::Voice {
+                    return Err("Este não é um canal de voz".into());
+                }
+                (s.id, ch, s.can_moderate(uid, admin))
+            };
+            if ch.user_limit > 0 && !moderate {
+                let inside = st
+                    .voice_sessions
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|v| v.channel_id == channel_id && v.user.id != uid)
+                    .count();
+                if inside >= ch.user_limit as usize {
+                    return Err("O canal de voz está cheio".into());
+                }
+            }
+            // Uma sessão por pessoa: sai do canal anterior, se houver.
+            st.leave_voice(uid, None);
+            st.voice_sessions.lock().unwrap().insert(
+                uid,
+                VoiceSession {
+                    conn_id: cx.conn_id,
+                    server_id: sid,
+                    channel_id,
+                    user: cx.me.clone(),
+                    muted: false,
+                    deafened: false,
+                    streaming: false,
+                    camera: false,
+                },
+            );
+            let token = lk.token(cx.me, channel_id, now_ms() / 1000);
+            cx.send(ServerMsg::VoiceToken {
+                server_id: sid,
+                channel_id,
+                url: lk.public_url.clone(),
+                token,
+                bitrate: ch.bitrate,
+                video_quality: ch.video_quality.clone(),
+            });
+            st.emit_voice(sid);
+        }
+
+        ClientMsg::VoiceLeave => st.leave_voice(uid, Some(cx.conn_id)),
+
+        ClientMsg::VoiceUpdate { muted, deafened, streaming, camera } => {
+            let sid = {
+                let mut sessions = st.voice_sessions.lock().unwrap();
+                match sessions.get_mut(&uid) {
+                    Some(s) if s.conn_id == cx.conn_id => {
+                        s.muted = muted || deafened;
+                        s.deafened = deafened;
+                        s.streaming = streaming;
+                        s.camera = camera;
+                        Some(s.server_id)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(sid) = sid {
+                st.emit_voice(sid);
+            }
+        }
+
+        ClientMsg::SetVoiceStatus { channel_id, status } => {
+            let status: String = clean_text(&status).chars().take(100).collect();
+            let in_channel = st.voice_sessions.lock().unwrap().get(&uid).is_some_and(|s| s.channel_id == channel_id);
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                // Como no Discord: quem está no canal define o status; moderadores também.
+                if !in_channel && !cache.servers[i].can_moderate(uid, admin) {
+                    return Err("Entre no canal de voz para definir o status".into());
+                }
+                let sid = cache.servers[i].id;
+                let ch = cache.servers[i].channels.iter_mut().find(|c| c.id == channel_id).ok_or("Canal não encontrado")?;
+                if ch.kind != ChannelKind::Voice {
+                    return Err("Só canais de voz têm status".into());
+                }
+                let mut updated = ch.clone();
+                updated.status = (!status.is_empty()).then(|| status.clone());
+                updated.status_by = updated.status.as_ref().map(|_| uid);
+                db::update_channel(tx, &updated)?;
+                *ch = updated;
+                Ok(sid)
+            })?;
+            st.emit(Event::ServerChanged(sid));
         }
 
         // ---------- papéis e banimentos ----------
@@ -309,6 +469,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 s.bans.push(ban);
                 Ok(s.name.clone())
             })?;
+            st.kick_voice_where(|v| v.server_id == server_id && v.user.id == user_id, "Você foi banido(a) do servidor");
             // Transparência: a pessoa banida fica sabendo onde e por quê.
             st.emit(Event::Send(
                 Audience::User(user_id),
@@ -355,6 +516,9 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
                 if !cache.servers[i].can_view(uid) {
                     return no_permission();
+                }
+                if cache.servers[i].channels.iter().any(|c| c.id == channel_id && c.kind == ChannelKind::Voice) {
+                    return Err("Canais de voz não têm chat de texto".into());
                 }
                 db::insert_message(tx, &message)?;
                 Ok(cache.servers[i].id)
@@ -527,6 +691,14 @@ pub fn clean_color(color: &str) -> String {
         color.to_string()
     } else {
         "#5865f2".into()
+    }
+}
+
+/// Canais de texto usam "meu-canal"; canais de voz aceitam espaços e maiúsculas ("Sala de Jogos").
+fn channel_name_for(kind: ChannelKind, name: &str) -> String {
+    match kind {
+        ChannelKind::Text => clean_channel_name(name),
+        ChannelKind::Voice => clean_text(name).chars().take(32).collect::<String>().trim().to_string(),
     }
 }
 

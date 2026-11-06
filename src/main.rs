@@ -4,6 +4,7 @@ mod db;
 mod legacy;
 mod model;
 mod state;
+mod voice;
 mod ws;
 
 use std::future::IntoFuture;
@@ -73,7 +74,10 @@ async fn main() {
     }
     let policy_page: &'static str = Box::leak(render_policy(&config).into_boxed_str());
 
-    let state = match AppState::open(&db_path, &legacy_path, config) {
+    let livekit = voice::LiveKit::start();
+    let _ = CSP.set(build_csp(livekit.as_ref().map(|l| l.csp_sources()).unwrap_or_default()));
+
+    let state = match AppState::open_with_voice(&db_path, &legacy_path, config, livekit) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             eprintln!("{e}");
@@ -105,6 +109,16 @@ async fn main() {
             "/app.js",
             get(|| async { asset("application/javascript", include_str!("../static/app.js")) }),
         )
+        .route(
+            "/voice.js",
+            get(|| async { asset("application/javascript", include_str!("../static/voice.js")) }),
+        )
+        .route(
+            "/vendor/livekit-client.umd.js",
+            get(|| async {
+                asset("application/javascript", include_str!("../static/vendor/livekit-client.umd.js"))
+            }),
+        )
         .route("/ws", get(ws::ws_handler))
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
@@ -125,6 +139,21 @@ async fn main() {
 
     // Tudo já está gravado (cada alteração é uma transação). Só otimiza o banco.
     state.db.optimize();
+    if let Some(lk) = &state.voice {
+        lk.shutdown();
+    }
+}
+
+static CSP: std::sync::OnceLock<HeaderValue> = std::sync::OnceLock::new();
+
+/// CSP restritiva; a única origem externa liberada é a do LiveKit (voz).
+fn build_csp(livekit_sources: String) -> HeaderValue {
+    let csp = format!(
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+         media-src 'self' blob:; connect-src 'self' {livekit_sources}; object-src 'none'; \
+         base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    );
+    HeaderValue::from_str(&csp).unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'"))
 }
 
 fn asset(mime: &'static str, body: &'static str) -> Response {
@@ -138,18 +167,18 @@ async fn security_headers(req: Request, next: Next) -> Response {
     let h = res.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
-             connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; \
-             frame-ancestors 'none'",
-        ),
+        CSP.get().cloned().unwrap_or_else(|| build_csp(String::new())),
     );
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(
         "permissions-policy",
-        HeaderValue::from_static("camera=(), microphone=(), geolocation=(), interest-cohort=()"),
+        // Microfone, câmera e tela só para o próprio Concord (canais de voz); o resto, bloqueado.
+        HeaderValue::from_static(
+            "camera=(self), microphone=(self), display-capture=(self), speaker-selection=(self), \
+             geolocation=(), interest-cohort=()",
+        ),
     );
     h.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));

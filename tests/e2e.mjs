@@ -52,7 +52,7 @@ function client(origin) {
 async function login(secret, name) {
   const c = client();
   await c.opened;
-  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 2 });
+  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 3 });
   c.ready = await c.wait(type("ready"));
   c.id = c.ready.me.id;
   return c;
@@ -62,12 +62,12 @@ async function login(secret, name) {
 const res = await fetch(base + "/");
 check(res.headers.get("content-security-policy")?.includes("default-src 'self'"), "CSP presente");
 const pol = await (await fetch(base + "/privacidade")).text();
-check(pol.includes("Versão 2") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v2 renderizada e escapada");
+check(pol.includes("Versão 3") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v3 renderizada e escapada");
 check((await fetch(base + "/convite/abc123XYZ")).status === 200, "rota /convite/:code entrega o app");
 
 let c0 = client(); await c0.opened;
 c0.send({ type: "hello", secret: S.a, name: "Ana", color: "#ff0000", consent_version: 1 });
-check((await c0.wait(type("consent_required"))).version === 2, "aceite da v1 não vale mais: pede consentimento da v2");
+check((await c0.wait(type("consent_required"))).version === 3, "aceite antigo não vale mais: pede consentimento da v3");
 await c0.closed;
 
 let blocked = false;
@@ -186,6 +186,53 @@ check(aExp.denuncias_feitas.length === 0 && aExp.servidores.some((s) => s.papel 
   const older = p2.messages.every((m) => m.id < p1.messages[0].id);
   check(p2.messages.length === 10 && !p2.has_more && older, "página anterior traz o restante, em ordem, sem repetir");
   for (const s of senders) s.ws.close();
+}
+
+// ---------- voz ----------
+if (!A.ready.voice_enabled) {
+  console.log("AVISO voz desativada nesta instância (sem LiveKit); testes de voz pulados");
+} else {
+  const textCh = priv.channels.find((c) => c.kind === "text").id;
+  const voiceCh = priv.channels.find((c) => c.kind === "voice");
+  check(voiceCh && voiceCh.bitrate === 64 && voiceCh.user_limit === 0, "servidor novo já vem com canal de voz");
+  A.send({ type: "voice_join", channel_id: textCh });
+  check((await A.error()).includes("não é um canal de voz"), "não entra em canal de texto como voz");
+  C.send({ type: "voice_join", channel_id: voiceCh.id });
+  check((await C.error()) === "Você não tem permissão para isso", "banido/não membro não recebe token de voz");
+
+  A.send({ type: "voice_join", channel_id: voiceCh.id });
+  const tok = await A.wait(type("voice_token"));
+  const lkUrl = (tok.url ?? "ws://localhost:7880").replace(/^ws/, "http");
+  const v = await fetch(`${lkUrl}/rtc/validate?access_token=${encodeURIComponent(tok.token)}`);
+  check(v.status === 200, `LiveKit aceita o token emitido pelo Concord (HTTP ${v.status})`);
+  const bad = await fetch(`${lkUrl}/rtc/validate?access_token=${encodeURIComponent(tok.token.slice(0, -4) + "AAAA")}`);
+  check(bad.status === 401, `LiveKit recusa token adulterado (HTTP ${bad.status})`);
+
+  const vs = await B.wait((m) => m.type === "voice_states" && m.states.some((s) => s.user.id === A.id));
+  check(vs.states[0].channel_id === voiceCh.id, "membros veem quem está no canal de voz");
+  check(await D.none((m) => m.type === "voice_states" && m.server_id === priv.id, 300), "quem não é do servidor (nem o admin) não vê a voz dele");
+
+  A.send({ type: "voice_update", muted: true, deafened: false, streaming: true, camera: false });
+  const vu = await B.wait((m) => m.type === "voice_states" && m.states.some((s) => s.muted && s.streaming));
+  check(vu != null, "mutado e \"ao vivo\" aparecem para os outros");
+
+  // B é moderador: pode definir o status mesmo fora do canal.
+  B.send({ type: "set_voice_status", channel_id: voiceCh.id, status: "aviso da moderação" });
+  const modStatus = await B.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.status === "aviso da moderação"));
+  check(modStatus != null, "moderador define status do canal de voz");
+  A.send({ type: "set_voice_status", channel_id: voiceCh.id, status: "jogando xadrez" });
+  const st1 = await B.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.status === "jogando xadrez"));
+  check(!JSON.stringify(st1).includes("status_by"), "status do canal aparece, sem dizer quem definiu");
+
+  A.send({ type: "update_channel", channel_id: voiceCh.id, user_limit: 1, bitrate: 128 });
+  await A.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.user_limit === 1 && c.bitrate === 128));
+  A.send({ type: "update_channel", channel_id: voiceCh.id, bitrate: 999 });
+  check((await A.error()).includes("8 a 384"), "taxa de bits fora da faixa é recusada");
+
+  A.send({ type: "voice_leave" });
+  const cleared = await B.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.id === voiceCh.id && c.status === null));
+  check(cleared != null, "status some quando o canal de voz esvazia (minimização)");
+  await sleep(1500);
 }
 
 // ---------- convite, admin, eliminação ----------

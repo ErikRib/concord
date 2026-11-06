@@ -14,7 +14,18 @@ exportação, eliminação, retenção, política (subir `POLICY_VERSION` se mud
 - Banco de dados SQLite (modo WAL, transações, UUIDv7, paginação por chave, migrações, backup a
   quente). Todo o SQL fica em `src/db.rs`, então trocar por PostgreSQL afeta só esse arquivo
 
-## Próximo (prioridade): canais de voz e transmissão de tela
+- **Canais de voz (primeira versão):** LiveKit local gerenciado pelo Concord, áudio, mutar e
+  ensurdecer, apertar para falar, volume individual, câmera, transmissão de tela até 4K60 com
+  estatísticas reais, status e configurações do canal, política v3. Validado com teste de mídia real
+  entre dois navegadores (`tests/media.mjs`)
+
+### Pendente na voz
+- Moderação de voz: mutar e ensurdecer pelo servidor, mover entre canais e desconectar alguém. Exige
+  chamar a API administrativa do LiveKit
+- Medir a fluidez de 60 fps numa máquina com GPU (`HEADED=1 node tests/media.mjs`)
+- App de desktop (Tauri e SDK nativo do LiveKit) para igualar o Discord de desktop em 1440p e 4K
+
+## Planejamento original da voz
 
 Pedido: funcionar o quanto antes, com os recursos do Discord e transmissão de tela com a mesma
 qualidade e fluidez, em alta resolução e fps.
