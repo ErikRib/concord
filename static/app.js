@@ -277,6 +277,8 @@ const state = {
   serverId: load("concord.server", null),
   channelId: load("concord.channel", null),
   messages: new Map(), // channelId -> [Message]
+  hasMore: new Map(), // channelId -> ainda há mensagens antigas no servidor?
+  loadingOlder: new Set(), // canais com página antiga a caminho
   online: [],
   typing: new Map(), // channelId -> Map(userId -> { name, until })
   unread: new Set(),
@@ -360,6 +362,8 @@ function handle(m) {
       state.servers = m.servers;
       state.online = m.online;
       state.messages.clear();
+      state.hasMore.clear();
+      state.loadingOlder.clear();
       state.reports.clear();
       setStatus(null);
       for (const s of state.servers) if (s.can_moderate) send({ type: "fetch_reports", server_id: s.id });
@@ -442,10 +446,20 @@ function handle(m) {
       renderMembers();
       break;
 
-    case "history":
-      state.messages.set(m.channel_id, m.messages);
-      if (m.channel_id === state.channelId) renderMessages("bottom");
+    case "history": {
+      state.hasMore.set(m.channel_id, m.has_more);
+      state.loadingOlder.delete(m.channel_id);
+      if (m.before) {
+        // Página antiga: entra no começo da lista.
+        const list = state.messages.get(m.channel_id) ?? [];
+        state.messages.set(m.channel_id, [...m.messages, ...list]);
+        if (m.channel_id === state.channelId) renderMessages("prepend");
+      } else {
+        state.messages.set(m.channel_id, m.messages);
+        if (m.channel_id === state.channelId) renderMessages("bottom");
+      }
       break;
+    }
 
     case "presence":
       state.online = m.online;
@@ -883,6 +897,7 @@ function renderMessages(scroll) {
   const box = $("#messages");
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const prevTop = box.scrollTop;
+  const prevHeight = box.scrollHeight;
   box.replaceChildren();
 
   const server = currentServer();
@@ -901,9 +916,13 @@ function renderMessages(scroll) {
     return;
   }
 
-  const intro = el("div", "channel-intro");
-  intro.append(el("h1", null, `Bem-vindo(a) a #${ch.name}!`), el("p", null, `Este é o começo do canal #${ch.name}.`));
-  box.append(intro);
+  if (state.hasMore.get(ch.id)) {
+    box.append(el("div", "empty", state.loadingOlder.has(ch.id) ? "Carregando mensagens antigas…" : "Role para cima para ver mensagens antigas"));
+  } else {
+    const intro = el("div", "channel-intro");
+    intro.append(el("h1", null, `Bem-vindo(a) a #${ch.name}!`), el("p", null, `Este é o começo do canal #${ch.name}.`));
+    box.append(intro);
+  }
 
   let prev = null;
   for (const m of list) {
@@ -947,10 +966,24 @@ function renderMessages(scroll) {
 
   if (scroll === "bottom" || (scroll === "auto" && nearBottom)) {
     box.scrollTop = box.scrollHeight;
+  } else if (scroll === "prepend") {
+    // Mantém na tela a mesma mensagem que a pessoa estava vendo.
+    box.scrollTop = box.scrollHeight - prevHeight + prevTop;
   } else {
     box.scrollTop = prevTop;
   }
 }
+
+// Perto do topo: busca a página anterior (paginação por id no servidor).
+$("#messages").addEventListener("scroll", () => {
+  const box = $("#messages");
+  const id = state.channelId;
+  if (box.scrollTop > 150 || !id || !state.hasMore.get(id) || state.loadingOlder.has(id)) return;
+  const oldest = state.messages.get(id)?.[0];
+  if (!oldest) return;
+  state.loadingOlder.add(id);
+  send({ type: "fetch_history", channel_id: id, before: oldest.id });
+});
 
 function renderTyping() {
   const now = Date.now();

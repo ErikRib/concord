@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::commands::{self, clean_color, clean_name, Ctx};
 use crate::model::{ClientMsg, Event, ServerMsg, User};
-use crate::state::{AppState, MAX_CONNECTIONS, POLICY_VERSION};
+use crate::state::{AppState, Fail, MAX_CONNECTIONS, POLICY_VERSION};
 
 pub type Out = mpsc::UnboundedSender<ServerMsg>;
 
@@ -190,8 +190,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 
     let mut me = User { id: user_id, name: clean_name(&name), color: clean_color(&color) };
-    if state.register_user(&me, consent_version) {
-        state.send_all(ServerMsg::ProfileUpdated { user: me.clone() });
+    match state.register_user(&me, consent_version) {
+        Ok(true) => state.send_all(ServerMsg::ProfileUpdated { user: me.clone() }),
+        Ok(false) => {}
+        Err(e) => {
+            let _ = out.send(error_message(e));
+            return finish(out, writer).await;
+        }
     }
 
     let conn_id = Uuid::new_v4();
@@ -239,20 +244,24 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     continue;
                 }
                 match serde_json::from_str::<ClientMsg>(&text) {
-                    Ok(ClientMsg::DeleteMyData) => {
-                        let result = state.delete_user_data(me.id);
-                        state.send_all(ServerMsg::UserPurged { user_id: me.id });
-                        for sid in result.servers_changed {
-                            state.emit(Event::ServerChanged(sid));
+                    Ok(ClientMsg::DeleteMyData) => match state.delete_user_data(me.id) {
+                        Ok(result) => {
+                            state.send_all(ServerMsg::UserPurged { user_id: me.id });
+                            for sid in result.servers_changed {
+                                state.emit(Event::ServerChanged(sid));
+                            }
+                            let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
+                            deleted = true;
+                            break;
                         }
-                        let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
-                        deleted = true;
-                        break;
-                    }
+                        Err(e) => {
+                            let _ = out.send(error_message(e));
+                        }
+                    },
                     Ok(cmd) => {
                         let mut cx = Ctx { state: &state, me: &mut me, conn_id, out: &out };
-                        if let Err(message) = commands::handle(cmd, &mut cx) {
-                            let _ = out.send(ServerMsg::Error { message });
+                        if let Err(e) = commands::handle(cmd, &mut cx) {
+                            let _ = out.send(error_message(e));
                         }
                     }
                     Err(_) => {
@@ -272,6 +281,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
     state.send_all(ServerMsg::Presence { online: state.online_users() });
     finish(out, writer).await;
+}
+
+/// Erros internos não expõem detalhes do banco ao cliente.
+fn error_message(e: Fail) -> ServerMsg {
+    let message = match e {
+        Fail::User(m) => m,
+        Fail::Internal(m) => {
+            eprintln!("Erro interno: {m}");
+            "Erro interno. Tente novamente em instantes.".into()
+        }
+    };
+    ServerMsg::Error { message }
 }
 
 /// Fecha a fila de saída e dá um tempo para as últimas mensagens serem entregues.

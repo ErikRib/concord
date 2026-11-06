@@ -1,4 +1,7 @@
+mod bench;
 mod commands;
+mod db;
+mod legacy;
 mod model;
 mod state;
 mod ws;
@@ -17,12 +20,41 @@ use axum::Router;
 
 use state::{AppState, Config, POLICY_UPDATED_AT, POLICY_VERSION};
 
+fn env_path(var: &str, default: &str) -> PathBuf {
+    PathBuf::from(std::env::var(var).unwrap_or_else(|_| default.into()))
+}
+
 #[tokio::main]
 async fn main() {
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
-    let data_path = PathBuf::from(
-        std::env::var("CONCORD_DATA").unwrap_or_else(|_| "concord-data.json".into()),
-    );
+    let db_path = env_path("CONCORD_DB", "concord.db");
+    // Formato antigo: importado uma única vez, se o banco estiver vazio.
+    let legacy_path = env_path("CONCORD_DATA", "concord-data.json");
+
+    // Subcomandos: `concord backup <arquivo>` e `concord bench [mensagens]`.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("backup") => {
+            let Some(dest) = args.get(2) else {
+                eprintln!("Uso: concord backup <arquivo-de-destino.db>");
+                std::process::exit(2);
+            };
+            match db::Db::open(&db_path).and_then(|d| d.backup_to(std::path::Path::new(dest))) {
+                Ok(()) => println!("Backup consistente salvo em {dest}"),
+                Err(e) => {
+                    eprintln!("Erro no backup: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some("bench") => {
+            let n = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+            bench::run(n);
+            return;
+        }
+        _ => {}
+    }
 
     let config = Config::from_env();
     if config.controller.is_empty() || config.contact.is_empty() {
@@ -41,25 +73,24 @@ async fn main() {
     }
     let policy_page: &'static str = Box::leak(render_policy(&config).into_boxed_str());
 
-    let state = Arc::new(AppState::load(data_path, config));
-
-    // Salva em disco a cada 5 s se houve mudança.
-    let saver = state.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            tick.tick().await;
-            saver.save_if_dirty();
+    let state = match AppState::open(&db_path, &legacy_path, config) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
-    });
+    };
+    println!("Banco de dados: {}", db_path.display());
 
     // Retenção: apaga o que passou do prazo, na inicialização e a cada hora.
+    // Roda numa thread separada para não atrasar o chat.
     let janitor = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(3600));
         loop {
             tick.tick().await;
-            janitor.purge_expired();
+            let j = janitor.clone();
+            let _ = tokio::task::spawn_blocking(move || j.purge_expired()).await;
         }
     });
 
@@ -92,9 +123,8 @@ async fn main() {
         _ = tokio::signal::ctrl_c() => println!("\nEncerrando…"),
     }
 
-    if let Err(e) = state.save() {
-        eprintln!("Erro ao salvar dados: {e}");
-    }
+    // Tudo já está gravado (cada alteração é uma transação). Só otimiza o banco.
+    state.db.optimize();
 }
 
 fn asset(mime: &'static str, body: &'static str) -> Response {

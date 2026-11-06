@@ -1,3 +1,7 @@
 /target
 concord-data.json
 concord-data.json.tmp
+concord-data.json.migrado
+*.db
+*.db-wal
+*.db-shm

@@ -9,7 +9,7 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 
 | Dado | Origem | Finalidade | Base legal | Onde fica | Retenção |
 |---|---|---|---|---|---|
-| Apelido e cor | Titular | Identificar quem fala no chat | Consentimento (art. 7º, I) | Servidor (`concord-data.json`) e navegador | Enquanto houver mensagens ou acesso recente |
+| Apelido e cor | Titular | Identificar quem fala no chat | Consentimento (art. 7º, I) | Banco (`concord.db`) e navegador | Enquanto houver mensagens ou acesso recente |
 | Id pseudônimo (SHA-256 do segredo) | Calculado no servidor | Vincular mensagens ao titular sem cadastro | Consentimento | Servidor | Igual ao acima |
 | Segredo de 256 bits | Gerado no navegador | Provar a autoria sem senha | Consentimento | **Apenas no navegador** | Até o titular limpar o navegador ou apagar os dados |
 | Mensagens e data/hora | Titular | Prestar o serviço de chat | Consentimento | Servidor | `CONCORD_RETENCAO_DIAS` (padrão 180) |
@@ -63,13 +63,13 @@ e dados de navegação.
 | Clickjacking | `X-Frame-Options: DENY` e `frame-ancestors 'none'` |
 | Vazamento de URL para terceiros | `Referrer-Policy: no-referrer` e links com `noopener noreferrer` |
 | Spam e esgotamento de recursos | Limite de taxa por conexão (≈3 ações/s), mensagens de até 16 KiB, até 500 conexões, 200 servidores e 100 canais por servidor, tempo limite para identificação |
-| Corrupção do arquivo de dados | Gravação atômica (arquivo temporário seguido de renomeação) |
+| Corrupção ou perda de dados | SQLite em modo WAL; cada alteração é uma transação ACID, com chaves estrangeiras garantindo a integridade (apagar um canal leva junto mensagens e denúncias). Se o banco falhar, o cache em memória é recarregado dele |
 | Apagar mensagem de outra pessoa | O servidor confere a autoria pelo id derivado; só moderadores apagam mensagens alheias, e isso fica registrado |
 | Escalada de privilégio | Toda permissão é verificada no servidor, em `src/commands.rs`. O cliente só esconde botões. Testado com tentativas de membros criarem canais, se promoverem e apagarem mensagens alheias |
 | Vazamento de servidor privado | Cada conexão filtra os eventos pelo que a pessoa pode ver (`Audience` e `ServerView`). Membros, banidos e convite só chegam a quem modera. Admins da instância não veem servidores privados |
 | Adivinhar convites | Código aleatório de 12 caracteres (~70 bits), limite de taxa e troca do código a qualquer momento |
 | Retaliação contra quem denuncia | O id de quem denunciou nunca sai do servidor |
-| Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16) |
+| Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16), em lotes que não travam o chat. A retenção usa a ordem cronológica dos ids UUIDv7 |
 
 ## 5. Pendências para colocar em produção
 
@@ -83,13 +83,16 @@ Estes itens dependem de quem vai operar a instância e não podem ser resolvidos
    e informe na política. Se o operador for uma pessoa jurídica com fins econômicos, o Marco Civil
    da Internet (Lei 12.965/2014, art. 15) exige guardar registros de acesso por 6 meses. Nesse caso,
    ajuste a política e a retenção.
-4. **Criptografia em repouso.** Proteja o disco ou a pasta de `concord-data.json` (BitLocker, LUKS)
-   e restrinja o acesso ao arquivo.
-5. **Backups.** Se houver backup, ele precisa respeitar o mesmo prazo de retenção, e a eliminação
-   deve chegar até ele.
-6. **Plano de resposta a incidentes (art. 48).** Defina quem avalia o incidente e como comunicar a
+4. **Criptografia em repouso.** Proteja o disco ou a pasta de `concord.db` (BitLocker, LUKS) e
+   restrinja o acesso aos arquivos `concord.db`, `concord.db-wal` e `concord.db-shm`.
+5. **Backups.** `concord backup <arquivo>` gera uma cópia consistente. Cada cópia guarda dados
+   pessoais: mantenha os backups por no máximo o prazo de retenção e saiba que "Apagar meus dados"
+   não alcança cópias antigas. Por isso, troque as cópias com frequência e documente isso na política.
+6. **Arquivo migrado.** Depois de conferir a migração, apague o `concord-data.json.migrado`. Ele tem
+   dados pessoais fora do alcance da retenção e da eliminação.
+7. **Plano de resposta a incidentes (art. 48).** Defina quem avalia o incidente e como comunicar a
    ANPD e os titulares em prazo razoável.
-7. **Regras de uso e administradores.** A moderação já existe, mas o servidor público "Concord" só é
+8. **Regras de uso e administradores.** A moderação já existe, mas o servidor público "Concord" só é
    moderado se `CONCORD_ADMINS` estiver definido. Publique regras de convivência e um canal para
    contestar decisões de moderação.
-8. **Relatório de impacto (RIPD, art. 38).** Recomendado se o uso crescer ou se houver dados sensíveis.
+9. **Relatório de impacto (RIPD, art. 38).** Recomendado se o uso crescer ou se houver dados sensíveis.

@@ -169,6 +169,25 @@ const aExp = (await A.wait(type("my_data"))).data;
 check(aExp.denuncias_feitas.length === 0 && aExp.servidores.some((s) => s.papel === "owner"),
   "exportação do dono traz o servidor; denúncia resolvida já não existe");
 
+// ---------- paginação do histórico (banco de dados) ----------
+{
+  const lobbyCh = lobby.channels[0].id;
+  const senders = [];
+  for (let k = 0; k < 6; k++) senders.push(await login(createHash("sha256").update("pag" + k).digest("hex"), `P${k}`));
+  for (const [k, s] of senders.entries()) {
+    for (let j = 0; j < 10; j++) s.send({ type: "send_message", channel_id: lobbyCh, content: `pag ${k}-${j}` });
+  }
+  await sleep(1500);
+  D.send({ type: "fetch_history", channel_id: lobbyCh });
+  const p1 = await D.wait((m) => m.type === "history" && !m.before);
+  check(p1.messages.length === 50 && p1.has_more, "primeira página traz 50 mensagens e avisa que há mais");
+  D.send({ type: "fetch_history", channel_id: lobbyCh, before: p1.messages[0].id });
+  const p2 = await D.wait((m) => m.type === "history" && m.before);
+  const older = p2.messages.every((m) => m.id < p1.messages[0].id);
+  check(p2.messages.length === 10 && !p2.has_more && older, "página anterior traz o restante, em ordem, sem repetir");
+  for (const s of senders) s.ws.close();
+}
+
 // ---------- convite, admin, eliminação ----------
 A.send({ type: "regenerate_invite", server_id: priv.id });
 const newInv = (await A.wait((m) => m.type === "server_updated" && m.server.invite_code !== priv.invite_code)).server.invite_code;

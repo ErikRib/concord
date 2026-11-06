@@ -24,7 +24,8 @@ Tools instalado, a toolchain padrão (MSVC) também funciona.
 | Variável | Padrão | Para que serve |
 |---|---|---|
 | `PORT` | `3000` | Porta HTTP |
-| `CONCORD_DATA` | `concord-data.json` | Arquivo de dados (contém dados pessoais: proteja-o) |
+| `CONCORD_DB` | `concord.db` | Banco de dados SQLite (contém dados pessoais: proteja-o) |
+| `CONCORD_DATA` | `concord-data.json` | Arquivo do formato antigo, importado uma única vez se o banco estiver vazio |
 | `CONCORD_RETENCAO_DIAS` | `180` | Prazo após o qual mensagens e registros inativos são apagados |
 | `CONCORD_CONTROLADOR` | — | Nome do controlador, exibido na política de privacidade |
 | `CONCORD_CONTATO` | — | Contato do encarregado (DPO) / canal do titular |
@@ -42,10 +43,32 @@ Administradores moderam o servidor público "Concord", que não tem dono, e qual
 Eles **não** veem servidores privados dos quais não participam. Se os dados daquele navegador forem
 apagados, o id muda e é preciso repetir o processo.
 
+## Banco de dados
+
+O Concord usa **SQLite**, embutido no executável, sem nada para instalar.
+
+- **Modo WAL:** leituras rodam em paralelo com a escrita, e uma queda de energia não corrompe o banco.
+- **Transações:** toda alteração é atômica. Um banimento, por exemplo, grava tudo ou nada.
+- **Ids UUIDv7:** já vêm em ordem cronológica, então abrir um canal e rolar para o passado custa o
+  mesmo com mil ou com milhões de mensagens.
+- **Migrações versionadas:** o esquema evolui sozinho ao atualizar o Concord.
+- **Migração do formato antigo:** na primeira execução, o `concord-data.json` é importado e
+  renomeado para `concord-data.json.migrado`. Confira e depois **apague esse arquivo**: ele tem
+  dados pessoais que a retenção e o "Apagar meus dados" não alcançam.
+- **Fronteira única:** todo o SQL fica em `src/db.rs`. Trocar por PostgreSQL significa reescrever
+  só esse arquivo.
+
+Comandos úteis:
+
+```
+cargo run --release -- backup copia.db    # cópia consistente com o servidor rodando
+cargo run --release -- bench 1000000      # teste de carga num banco temporário
+```
+
 ## Funcionalidades
 
-- Servidores e canais de texto, mensagens em tempo real, lista de quem está online, aviso de "digitando…"
-- Histórico salvo em disco (até 1000 mensagens por canal, respeitando o prazo de retenção)
+- Servidores e canais de texto, mensagens em tempo real, lista de membros online/offline, aviso de "digitando…"
+- Histórico completo no banco, carregado em páginas ao rolar para cima (limitado só pelo prazo de retenção)
 - Apagar as próprias mensagens e trocar o apelido
 - **Servidores públicos ou privados** (padrão), com link de convite `/convite/CÓDIGO` que pode ser gerado de novo
 - **Papéis:** dono, moderador, membro e visitante. Clique no nome de alguém para promover ou banir
@@ -74,11 +97,12 @@ Testes unitários:
 cargo test
 ```
 
-Teste de ponta a ponta (Node 22+), com um servidor de teste na porta 3999 e um arquivo de dados
-**novo e vazio**. No PowerShell:
+Teste de ponta a ponta (Node 22+), com um servidor de teste na porta 3999 e um banco **novo e
+vazio**. No PowerShell:
 
 ```powershell
-$env:PORT="3999"; $env:CONCORD_DATA="$env:TEMP\concord-e2e.json"; Remove-Item $env:CONCORD_DATA -ErrorAction SilentlyContinue
+$env:PORT="3999"; $env:CONCORD_DB="$env:TEMP\concord-e2e.db"; Remove-Item "$env:CONCORD_DB*" -ErrorAction SilentlyContinue
+$env:CONCORD_DATA="$env:TEMP\nao-existe.json"
 $env:CONCORD_CONTROLADOR="Teste <Ltda>"; $env:CONCORD_CONTATO="dpo@exemplo.com"; $env:CONCORD_RETENCAO_DIAS="30"
 $env:CONCORD_ADMINS = node tests/e2e.mjs --admin-id
 cargo run
@@ -89,10 +113,13 @@ Depois, em outro terminal, rode `node tests/e2e.mjs`.
 ## Estrutura
 
 ```
-src/main.rs        servidor HTTP, rotas, cabeçalhos de segurança, tarefas de salvamento e de retenção
+src/main.rs        servidor HTTP, rotas, cabeçalhos de segurança, retenção, subcomandos backup/bench
 src/ws.rs          conexões WebSocket: identidade, consentimento, limites e filtro de eventos
 src/commands.rs    comandos dos clientes, com todas as verificações de permissão
-src/state.rs       estado, visões por papel, persistência e operações da LGPD (exportar, apagar, reter)
+src/state.rs       estado, cache, transações e operações da LGPD (exportar, apagar, reter)
+src/db.rs          todo o SQL: esquema, migrações e consultas
+src/legacy.rs      importação única do formato JSON antigo
+src/bench.rs       teste de carga
 src/model.rs       tipos, papéis e protocolo cliente/servidor
 static/            cliente web e política de privacidade (embutidos no executável)
 docs/LGPD.md       registro do tratamento, direitos, medidas e pendências

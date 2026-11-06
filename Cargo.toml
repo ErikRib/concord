@@ -9,5 +9,10 @@ tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 sha2 = "0.10"
+# SQLite embutido no executável (compilado junto, sem instalação separada).
+rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
+
+[profile.release]
+lto = "thin"

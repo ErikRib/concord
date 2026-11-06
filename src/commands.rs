@@ -1,19 +1,21 @@
 //! Comandos enviados pelos clientes. Toda permissão é verificada aqui,
 //! no servidor; o cliente só esconde botões por conveniência.
+//!
+//! Cada alteração roda em `AppState::mutate`: valida, grava no banco numa
+//! transação e só então atualiza o cache em memória.
 
 use uuid::Uuid;
 
+use crate::db;
 use crate::model::{
     new_invite_code, Audience, Ban, Channel, ClientMsg, Event, Message, Report, Server, ServerMsg,
     User, REPORT_CATEGORIES,
 };
 use crate::state::{
-    now_ms, AppState, Data, HISTORY_SIZE, MAX_CHANNELS_PER_SERVER, MAX_MEMBERS_PER_SERVER,
-    MAX_OWNED_SERVERS, MAX_REPORTS_PER_SERVER, MAX_SERVERS, MAX_STORED_PER_CHANNEL,
+    log, now_ms, AppState, Fail, Res, HISTORY_PAGE, MAX_CHANNELS_PER_SERVER, MAX_MEMBERS_PER_SERVER,
+    MAX_OWNED_SERVERS, MAX_REPORTS_PER_SERVER, MAX_SERVERS,
 };
 use crate::ws::Out;
-
-type R = Result<(), String>;
 
 pub struct Ctx<'a> {
     pub state: &'a AppState,
@@ -30,27 +32,11 @@ impl Ctx<'_> {
 
 const NO_PERMISSION: &str = "Você não tem permissão para isso";
 
-/// Trava os dados, acha o servidor e executa `f`. Marca os dados como alterados.
-fn with_server<T>(st: &AppState, sid: Uuid, f: impl FnOnce(&mut Data, usize) -> Result<T, String>) -> Result<T, String> {
-    let mut data = st.data.lock().unwrap();
-    let i = data.servers.iter().position(|s| s.id == sid).ok_or("Servidor não encontrado")?;
-    let r = f(&mut data, i)?;
-    drop(data);
-    st.mark_dirty();
-    Ok(r)
+fn no_permission<T>() -> Res<T> {
+    Err(Fail::User(NO_PERMISSION.into()))
 }
 
-/// Igual a `with_server`, a partir de um canal. Passa (dados, índice do servidor).
-fn with_channel<T>(st: &AppState, cid: Uuid, f: impl FnOnce(&mut Data, usize) -> Result<T, String>) -> Result<T, String> {
-    let mut data = st.data.lock().unwrap();
-    let i = data.server_index_of_channel(cid).ok_or("Canal não encontrado")?;
-    let r = f(&mut data, i)?;
-    drop(data);
-    st.mark_dirty();
-    Ok(r)
-}
-
-pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
+pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
     let st = cx.state;
     let uid = cx.me.id;
     let admin = st.is_admin(uid);
@@ -61,8 +47,21 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
             cx.me.name = clean_name(&name);
             cx.me.color = clean_color(&color);
             st.online.lock().unwrap().insert(cx.conn_id, cx.me.clone());
-            if st.update_profile(cx.me) {
+            if st.update_profile(cx.me)? {
                 st.send_all(ServerMsg::ProfileUpdated { user: cx.me.clone() });
+                // Listas de membros de servidores privados mostram o nome atual.
+                let servers: Vec<Uuid> = st
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .servers
+                    .iter()
+                    .filter(|s| !s.public && s.is_member(uid))
+                    .map(|s| s.id)
+                    .collect();
+                for sid in servers {
+                    st.emit(Event::ServerChanged(sid));
+                }
             }
             st.send_all(ServerMsg::Presence { online: st.online_users() });
         }
@@ -83,99 +82,108 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
                 invite_code: new_invite_code(),
             };
             let sid = server.id;
-            {
-                let mut data = st.data.lock().unwrap();
-                if data.servers.len() >= MAX_SERVERS {
+            st.mutate(|cache, tx| {
+                if cache.servers.len() >= MAX_SERVERS {
                     return Err("Limite de servidores da instância atingido".into());
                 }
-                if data.servers.iter().filter(|s| s.owner_id == Some(uid)).count() >= MAX_OWNED_SERVERS {
-                    return Err(format!("Cada pessoa pode ser dona de até {MAX_OWNED_SERVERS} servidores"));
+                if cache.servers.iter().filter(|s| s.owner_id == Some(uid)).count() >= MAX_OWNED_SERVERS {
+                    return Err(format!("Cada pessoa pode ser dona de até {MAX_OWNED_SERVERS} servidores").into());
                 }
-                data.servers.push(server);
-            }
-            st.mark_dirty();
+                db::insert_server(tx, &server, now_ms())?;
+                cache.servers.push(server);
+                Ok(())
+            })?;
             st.emit(Event::ServerChanged(sid));
             cx.send(ServerMsg::Focus { server_id: sid, channel_id: Some(channel.id) });
         }
 
         ClientMsg::UpdateServer { server_id, name, public } => {
             let name = name.map(|n| valid_server_name(&n)).transpose()?;
-            with_server(st, server_id, |d, i| {
-                if !d.servers[i].can_manage(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if !cache.servers[i].can_manage(uid, admin) {
+                    return no_permission();
                 }
-                let s = &mut d.servers[i];
+                let mut s = cache.servers[i].clone();
                 if let Some(n) = name {
                     s.name = n;
                 }
                 if let Some(p) = public {
                     s.public = p;
                 }
-                let detail = format!("público: {}", s.public);
-                d.log(server_id, Some(uid), "servidor_alterado", None, &detail);
+                db::update_server(tx, &s)?;
+                log(tx, server_id, Some(uid), "servidor_alterado", None, &format!("público: {}", s.public))?;
+                cache.servers[i] = s;
                 Ok(())
             })?;
             st.emit(Event::ServerChanged(server_id));
         }
 
         ClientMsg::DeleteServer { server_id } => {
-            with_server(st, server_id, |d, i| {
-                if !d.servers[i].can_manage(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if !cache.servers[i].can_manage(uid, admin) {
+                    return no_permission();
                 }
-                let s = d.servers.remove(i);
-                for c in &s.channels {
-                    d.messages.remove(&c.id);
-                }
-                d.reports.retain(|r| r.server_id != server_id);
-                d.log(server_id, Some(uid), "servidor_apagado", None, "");
+                // Canais, mensagens, denúncias e papéis vão junto (ON DELETE CASCADE).
+                db::delete_server(tx, server_id)?;
+                log(tx, server_id, Some(uid), "servidor_apagado", None, "")?;
+                cache.servers.remove(i);
                 Ok(())
             })?;
             st.emit(Event::ServerDeleted(server_id));
         }
 
         ClientMsg::RegenerateInvite { server_id } => {
-            with_server(st, server_id, |d, i| {
-                if !d.servers[i].can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if !cache.servers[i].can_moderate(uid, admin) {
+                    return no_permission();
                 }
-                d.servers[i].invite_code = new_invite_code();
+                let mut s = cache.servers[i].clone();
+                s.invite_code = new_invite_code();
+                db::update_server(tx, &s)?;
+                cache.servers[i] = s;
                 Ok(())
             })?;
             st.emit(Event::ServerChanged(server_id));
         }
 
         ClientMsg::JoinServer { code } => {
-            let code = code.trim();
-            let (sid, first_channel) = {
-                let mut data = st.data.lock().unwrap();
-                let s = data
+            let code = code.trim().to_string();
+            let (sid, first_channel) = st.mutate(|cache, tx| {
+                let i = cache
                     .servers
-                    .iter_mut()
-                    .find(|s| !code.is_empty() && s.invite_code == code)
+                    .iter()
+                    .position(|s| !code.is_empty() && s.invite_code == code)
                     .ok_or("Convite inválido ou expirado")?;
+                let s = &cache.servers[i];
                 if s.is_banned(uid) {
                     return Err("Você não pode entrar neste servidor".into());
                 }
+                let result = (s.id, s.channels.first().map(|c| c.id));
                 if !s.is_member(uid) {
                     if s.members.len() >= MAX_MEMBERS_PER_SERVER {
                         return Err("Este servidor está cheio".into());
                     }
-                    s.members.push(uid);
+                    db::set_role(tx, "server_members", s.id, uid, true)?;
+                    cache.servers[i].members.push(uid);
                 }
-                (s.id, s.channels.first().map(|c| c.id))
-            };
-            st.mark_dirty();
+                Ok(result)
+            })?;
             st.emit(Event::ServerChanged(sid));
             cx.send(ServerMsg::Focus { server_id: sid, channel_id: first_channel });
         }
 
         ClientMsg::LeaveServer { server_id } => {
-            with_server(st, server_id, |d, i| {
-                let s = &mut d.servers[i];
-                if s.owner_id == Some(uid) {
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if cache.servers[i].owner_id == Some(uid) {
                     return Err("Quem é dono não pode sair. Apague o servidor ou apague seus dados para passá-lo adiante.".into());
                 }
+                db::set_role(tx, "server_members", server_id, uid, false)?;
+                db::set_role(tx, "server_moderators", server_id, uid, false)?;
+                let s = &mut cache.servers[i];
                 s.members.retain(|&m| m != uid);
                 s.moderators.retain(|&m| m != uid);
                 Ok(())
@@ -191,15 +199,17 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
             }
             let channel = Channel { id: Uuid::new_v4(), name };
             let cid = channel.id;
-            with_server(st, server_id, |d, i| {
-                let s = &mut d.servers[i];
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                let s = &cache.servers[i];
                 if !s.can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
                 if s.channels.len() >= MAX_CHANNELS_PER_SERVER {
                     return Err("Limite de canais atingido".into());
                 }
-                s.channels.push(channel);
+                db::insert_channel(tx, server_id, &channel, s.channels.len() as i64)?;
+                cache.servers[i].channels.push(channel);
                 Ok(())
             })?;
             st.emit(Event::ServerChanged(server_id));
@@ -207,19 +217,20 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
         }
 
         ClientMsg::DeleteChannel { channel_id } => {
-            let sid = with_channel(st, channel_id, |d, i| {
-                let s = &mut d.servers[i];
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
                 if !s.can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
                 if s.channels.len() <= 1 {
                     return Err("O servidor precisa ter pelo menos um canal".into());
                 }
-                s.channels.retain(|c| c.id != channel_id);
                 let sid = s.id;
-                d.messages.remove(&channel_id);
-                d.reports.retain(|r| r.channel_id != channel_id);
-                d.log(sid, Some(uid), "canal_apagado", None, "");
+                // Mensagens e denúncias do canal vão junto (ON DELETE CASCADE).
+                db::delete_channel(tx, channel_id)?;
+                log(tx, sid, Some(uid), "canal_apagado", None, "")?;
+                cache.servers[i].channels.retain(|c| c.id != channel_id);
                 Ok(sid)
             })?;
             st.emit(Event::ServerChanged(sid));
@@ -228,17 +239,25 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
 
         // ---------- papéis e banimentos ----------
         ClientMsg::SetModerator { server_id, user_id, enabled } => {
-            with_server(st, server_id, |d, i| {
-                if !d.servers[i].can_manage(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if !cache.servers[i].can_manage(uid, admin) {
+                    return no_permission();
                 }
-                if !d.users.contains_key(&user_id) {
+                if !cache.users.contains_key(&user_id) {
                     return Err("Pessoa não encontrada".into());
                 }
-                let s = &mut d.servers[i];
+                let s = &cache.servers[i];
                 if s.owner_id == Some(user_id) || !s.can_view(user_id) {
                     return Err("Não é possível alterar o papel desta pessoa".into());
                 }
+                db::set_role(tx, "server_moderators", server_id, user_id, enabled)?;
+                if enabled {
+                    db::set_role(tx, "server_members", server_id, user_id, true)?;
+                }
+                let action = if enabled { "moderador_adicionado" } else { "moderador_removido" };
+                log(tx, server_id, Some(uid), action, Some(user_id), "")?;
+                let s = &mut cache.servers[i];
                 s.moderators.retain(|&m| m != user_id);
                 if enabled {
                     s.moderators.push(user_id);
@@ -246,8 +265,6 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
                         s.members.push(user_id);
                     }
                 }
-                let action = if enabled { "moderador_adicionado" } else { "moderador_removido" };
-                d.log(server_id, Some(uid), action, Some(user_id), "");
                 Ok(())
             })?;
             st.emit(Event::ServerChanged(server_id));
@@ -264,43 +281,33 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
             if st.is_admin(user_id) {
                 return Err("Administradores da instância não podem ser banidos".into());
             }
-            let server_name = with_server(st, server_id, |d, i| {
-                let s = &d.servers[i];
+            let server_name = st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                let s = &cache.servers[i];
                 if !s.can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
                 if s.owner_id == Some(user_id) {
                     return Err("O dono do servidor não pode ser banido".into());
                 }
                 // Só quem gerencia pode banir moderadores.
                 if s.moderators.contains(&user_id) && !s.can_manage(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
-                let channels: Vec<Uuid> = s.channels.iter().map(|c| c.id).collect();
-                let s = &mut d.servers[i];
+                let ban = Ban { user_id, reason: reason.clone(), at: now_ms() };
+                db::set_role(tx, "server_members", server_id, user_id, false)?;
+                db::set_role(tx, "server_moderators", server_id, user_id, false)?;
+                db::insert_ban(tx, server_id, &ban)?;
+                if delete_messages {
+                    db::delete_user_messages_in_server(tx, server_id, user_id)?;
+                }
+                log(tx, server_id, Some(uid), "banimento", Some(user_id), &reason)?;
+                let s = &mut cache.servers[i];
                 s.members.retain(|&m| m != user_id);
                 s.moderators.retain(|&m| m != user_id);
-                if !s.is_banned(user_id) {
-                    s.bans.push(Ban { user_id, reason: reason.clone(), at: now_ms() });
-                }
-                let name = s.name.clone();
-                if delete_messages {
-                    let mut removed = vec![];
-                    for c in &channels {
-                        if let Some(list) = d.messages.get_mut(c) {
-                            list.retain(|m| {
-                                let keep = m.author.id != user_id;
-                                if !keep {
-                                    removed.push(m.id);
-                                }
-                                keep
-                            });
-                        }
-                    }
-                    d.reports.retain(|r| !removed.contains(&r.message_id));
-                }
-                d.log(server_id, Some(uid), "banimento", Some(user_id), &reason);
-                Ok(name)
+                s.bans.retain(|b| b.user_id != user_id);
+                s.bans.push(ban);
+                Ok(s.name.clone())
             })?;
             // Transparência: a pessoa banida fica sabendo onde e por quê.
             st.emit(Event::Send(
@@ -309,21 +316,20 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
             ));
             st.emit(Event::ServerChanged(server_id));
             if delete_messages {
-                st.emit(Event::Send(
-                    Audience::Server(server_id),
-                    ServerMsg::MessagesPurged { server_id, user_id },
-                ));
+                st.emit(Event::Send(Audience::Server(server_id), ServerMsg::MessagesPurged { server_id, user_id }));
                 st.emit(Event::ReportsChanged(server_id));
             }
         }
 
         ClientMsg::UnbanUser { server_id, user_id } => {
-            with_server(st, server_id, |d, i| {
-                if !d.servers[i].can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+            st.mutate(|cache, tx| {
+                let i = cache.server_index(server_id).ok_or("Servidor não encontrado")?;
+                if !cache.servers[i].can_moderate(uid, admin) {
+                    return no_permission();
                 }
-                d.servers[i].bans.retain(|b| b.user_id != user_id);
-                d.log(server_id, Some(uid), "banimento_revogado", Some(user_id), "");
+                db::delete_ban(tx, server_id, user_id)?;
+                log(tx, server_id, Some(uid), "banimento_revogado", Some(user_id), "")?;
+                cache.servers[i].bans.retain(|b| b.user_id != user_id);
                 Ok(())
             })?;
             st.emit(Event::ServerChanged(server_id));
@@ -339,78 +345,67 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
                 return Err("A mensagem passa de 2000 caracteres".into());
             }
             let message = Message {
-                id: Uuid::new_v4(),
+                id: Uuid::now_v7(),
                 channel_id,
                 author: cx.me.clone(),
                 content: content.to_string(),
                 timestamp: now_ms(),
             };
-            let sid = with_channel(st, channel_id, |d, i| {
-                if !d.servers[i].can_view(uid) {
-                    return Err(NO_PERMISSION.into());
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                if !cache.servers[i].can_view(uid) {
+                    return no_permission();
                 }
-                let sid = d.servers[i].id;
-                let list = d.messages.entry(channel_id).or_default();
-                list.push(message.clone());
-                if list.len() > MAX_STORED_PER_CHANNEL {
-                    let excess = list.len() - MAX_STORED_PER_CHANNEL;
-                    list.drain(..excess);
-                }
-                Ok(sid)
+                db::insert_message(tx, &message)?;
+                Ok(cache.servers[i].id)
             })?;
             st.emit(Event::Send(Audience::Server(sid), ServerMsg::Message { message }));
         }
 
-        ClientMsg::FetchHistory { channel_id } => {
-            let messages = {
-                let data = st.data.lock().unwrap();
-                let i = data.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
-                if !data.servers[i].can_view(uid) {
-                    return Err(NO_PERMISSION.into());
+        ClientMsg::FetchHistory { channel_id, before } => {
+            {
+                let cache = st.cache.lock().unwrap();
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                if !cache.servers[i].can_view(uid) {
+                    return no_permission();
                 }
-                data.messages
-                    .get(&channel_id)
-                    .map(|l| l[l.len().saturating_sub(HISTORY_SIZE)..].to_vec())
-                    .unwrap_or_default()
-            };
-            cx.send(ServerMsg::History { channel_id, messages });
+            }
+            // Pede uma a mais para saber se ainda há mensagens antigas.
+            let mut messages = st.read(|c| db::history(c, channel_id, before, HISTORY_PAGE + 1))?;
+            let has_more = messages.len() > HISTORY_PAGE;
+            if has_more {
+                messages.remove(0);
+            }
+            cx.send(ServerMsg::History { channel_id, messages, before, has_more });
         }
 
         ClientMsg::Typing { channel_id } => {
             let sid = {
-                let data = st.data.lock().unwrap();
-                data.server_index_of_channel(channel_id)
-                    .filter(|&i| data.servers[i].can_view(uid))
-                    .map(|i| data.servers[i].id)
+                let cache = st.cache.lock().unwrap();
+                cache
+                    .server_index_of_channel(channel_id)
+                    .filter(|&i| cache.servers[i].can_view(uid))
+                    .map(|i| cache.servers[i].id)
             };
             if let Some(sid) = sid {
-                st.emit(Event::Send(
-                    Audience::Server(sid),
-                    ServerMsg::Typing { channel_id, user: cx.me.clone() },
-                ));
+                st.emit(Event::Send(Audience::Server(sid), ServerMsg::Typing { channel_id, user: cx.me.clone() }));
             }
         }
 
         // O autor apaga a própria mensagem; moderadores apagam qualquer uma.
         ClientMsg::DeleteMessage { channel_id, message_id } => {
-            let sid = with_channel(st, channel_id, |d, i| {
-                let s = &d.servers[i];
-                let sid = s.id;
-                let moderate = s.can_moderate(uid, admin);
-                let author = d
-                    .messages
-                    .get(&channel_id)
-                    .and_then(|l| l.iter().find(|m| m.id == message_id))
-                    .map(|m| m.author.id)
-                    .ok_or("Mensagem não encontrada")?;
-                if author != uid && !moderate {
-                    return Err(NO_PERMISSION.into());
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
+                let author = db::message_author(tx, channel_id, message_id)?.ok_or("Mensagem não encontrada")?;
+                if author != uid && !s.can_moderate(uid, admin) {
+                    return no_permission();
                 }
-                d.remove_message(channel_id, message_id);
+                db::delete_message(tx, message_id)?;
                 if author != uid {
-                    d.log(sid, Some(uid), "mensagem_apagada", Some(author), "");
+                    log(tx, s.id, Some(uid), "mensagem_apagada", Some(author), "")?;
                 }
-                Ok(sid)
+                Ok(s.id)
             })?;
             st.emit(Event::Send(Audience::Server(sid), ServerMsg::MessageDeleted { channel_id, message_id }));
             st.emit(Event::ReportsChanged(sid));
@@ -422,38 +417,36 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
                 return Err("Categoria de denúncia inválida".into());
             }
             let details: String = clean_text(&details).chars().take(500).collect();
-            let sid = with_channel(st, channel_id, |d, i| {
-                let s = &d.servers[i];
-                let sid = s.id;
+            let sid = st.mutate(|cache, tx| {
+                let i = cache.server_index_of_channel(channel_id).ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
                 if !s.can_view(uid) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
-                let author = d
-                    .messages
-                    .get(&channel_id)
-                    .and_then(|l| l.iter().find(|m| m.id == message_id))
-                    .map(|m| m.author.id)
-                    .ok_or("Mensagem não encontrada")?;
+                let author = db::message_author(tx, channel_id, message_id)?.ok_or("Mensagem não encontrada")?;
                 if author == uid {
                     return Err("Você não pode denunciar a própria mensagem".into());
                 }
-                if d.reports.iter().any(|r| r.message_id == message_id && r.reporter_id == uid) {
+                if db::report_exists(tx, message_id, uid)? {
                     return Err("Você já denunciou esta mensagem".into());
                 }
-                if d.reports.iter().filter(|r| r.server_id == sid).count() >= MAX_REPORTS_PER_SERVER {
+                if db::count_reports(tx, s.id)? >= MAX_REPORTS_PER_SERVER {
                     return Err("Fila de denúncias cheia; tente mais tarde".into());
                 }
-                d.reports.push(Report {
-                    id: Uuid::new_v4(),
-                    server_id: sid,
-                    channel_id,
-                    message_id,
-                    reporter_id: uid,
-                    category,
-                    details,
-                    created_at: now_ms(),
-                });
-                Ok(sid)
+                db::insert_report(
+                    tx,
+                    &Report {
+                        id: Uuid::now_v7(),
+                        server_id: s.id,
+                        channel_id,
+                        message_id,
+                        reporter_id: uid,
+                        category,
+                        details,
+                        created_at: now_ms(),
+                    },
+                )?;
+                Ok(s.id)
             })?;
             cx.send(ServerMsg::Info {
                 message: "Denúncia enviada. Os moderadores não ficam sabendo quem denunciou.".into(),
@@ -467,25 +460,24 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
         }
 
         ClientMsg::ResolveReport { report_id, delete_message } => {
-            let (sid, deleted) = {
-                let mut data = st.data.lock().unwrap();
-                let r = data.reports.iter().find(|r| r.id == report_id).cloned().ok_or("Denúncia não encontrada")?;
-                let s = data.server(r.server_id).ok_or("Servidor não encontrado")?;
+            let (sid, deleted) = st.mutate(|cache, tx| {
+                let r = db::get_report(tx, report_id)?.ok_or("Denúncia não encontrada")?;
+                let s = cache.server(r.server_id).ok_or("Servidor não encontrado")?;
                 if !s.can_moderate(uid, admin) {
-                    return Err(NO_PERMISSION.into());
+                    return no_permission();
                 }
-                let deleted = if delete_message {
-                    let author = data.remove_message(r.channel_id, r.message_id);
-                    data.log(r.server_id, Some(uid), "mensagem_apagada_por_denuncia", author, &r.category);
-                    author.map(|_| (r.channel_id, r.message_id))
+                if delete_message {
+                    let author = db::message_author(tx, r.channel_id, r.message_id)?;
+                    // Apagar a mensagem leva junto todas as denúncias sobre ela.
+                    db::delete_message(tx, r.message_id)?;
+                    log(tx, r.server_id, Some(uid), "mensagem_apagada_por_denuncia", author, &r.category)?;
+                    Ok((r.server_id, Some((r.channel_id, r.message_id))))
                 } else {
-                    data.reports.retain(|x| x.id != report_id);
-                    data.log(r.server_id, Some(uid), "denuncia_descartada", None, &r.category);
-                    None
-                };
-                (r.server_id, deleted)
-            };
-            st.mark_dirty();
+                    db::delete_report(tx, report_id)?;
+                    log(tx, r.server_id, Some(uid), "denuncia_descartada", None, &r.category)?;
+                    Ok((r.server_id, None))
+                }
+            })?;
             if let Some((channel_id, message_id)) = deleted {
                 st.emit(Event::Send(Audience::Server(sid), ServerMsg::MessageDeleted { channel_id, message_id }));
             }
@@ -494,7 +486,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> R {
 
         // ---------- LGPD ----------
         ClientMsg::ExportMyData => {
-            let data = st.export_user_data(cx.me);
+            let data = st.export_user_data(cx.me)?;
             cx.send(ServerMsg::MyData { data });
         }
 
@@ -509,7 +501,7 @@ pub fn clean_text(s: &str) -> String {
     s.trim().chars().filter(|c| !c.is_control()).collect()
 }
 
-fn valid_server_name(name: &str) -> Result<String, String> {
+fn valid_server_name(name: &str) -> Res<String> {
     let name = clean_text(name);
     if name.is_empty() || name.chars().count() > 50 {
         return Err("O nome do servidor precisa ter de 1 a 50 caracteres".into());

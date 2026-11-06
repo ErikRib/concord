@@ -218,7 +218,12 @@ pub enum ClientMsg {
     },
     UnbanUser { server_id: Uuid, user_id: Uuid },
     SendMessage { channel_id: Uuid, content: String },
-    FetchHistory { channel_id: Uuid },
+    /// Sem `before`: a página mais recente. Com `before`: mensagens anteriores a ela.
+    FetchHistory {
+        channel_id: Uuid,
+        #[serde(default)]
+        before: Option<Uuid>,
+    },
     Typing { channel_id: Uuid },
     DeleteMessage { channel_id: Uuid, message_id: Uuid },
     ReportMessage {
@@ -253,7 +258,7 @@ pub enum ServerMsg {
     MessageDeleted { channel_id: Uuid, message_id: Uuid },
     /// Mensagens de alguém apagadas num servidor (ex.: banimento).
     MessagesPurged { server_id: Uuid, user_id: Uuid },
-    History { channel_id: Uuid, messages: Vec<Message> },
+    History { channel_id: Uuid, messages: Vec<Message>, before: Option<Uuid>, has_more: bool },
     Presence { online: Vec<User> },
     Typing { channel_id: Uuid, user: User },
     Reports { server_id: Uuid, reports: Vec<ReportView> },

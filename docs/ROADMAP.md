@@ -11,16 +11,76 @@ exportação, eliminação, retenção, política (subir `POLICY_VERSION` se mud
 - Moderação: dono, moderadores, servidores privados com convite, denúncias anônimas, banimentos
 - Lista de membros por servidor (online/offline)
 
-## Próximo: banco de dados SQLite
+- Banco de dados SQLite (modo WAL, transações, UUIDv7, paginação por chave, migrações, backup a
+  quente). Todo o SQL fica em `src/db.rs`, então trocar por PostgreSQL afeta só esse arquivo
 
-Hoje tudo fica num único arquivo JSON, regravado inteiro a cada mudança. Trocar por SQLite é
-**pré-requisito** para os dois itens pedidos abaixo:
+## Próximo (prioridade): canais de voz e transmissão de tela
 
-- bots precisam de tokens guardados com segurança e de consultas eficientes;
-- a importação do Discord pode trazer milhares de canais e mensagens de uma vez.
+Pedido: funcionar o quanto antes, com os recursos do Discord e transmissão de tela com a mesma
+qualidade e fluidez, em alta resolução e fps.
 
-Benefícios extras: histórico paginado (rolar para mensagens antigas), eliminação e retenção com
-uma consulta, e menos risco de perder dados.
+### Decisão técnica principal: SFU
+
+- Áudio e vídeo vão por **WebRTC**, que já vem embutido nos navegadores, criptografado (DTLS-SRTP)
+  e com baixa latência.
+- Se cada pessoa mandasse o vídeo direto para todas as outras (malha), uma transmissão 1080p60 para
+  10 pessoas exigiria cerca de 10 vezes o upload de quem transmite. Por isso o Discord usa um
+  **SFU** (*Selective Forwarding Unit*): quem transmite envia **uma** vez ao servidor, e o servidor
+  repassa para cada espectador.
+- **Simulcast/SVC:** quem transmite manda camadas em qualidades diferentes (por exemplo 1080p60,
+  720p30 e 360p). O SFU entrega a camada que cabe na conexão de cada espectador, e quem tem internet
+  ruim não derruba a qualidade dos outros.
+
+Opções de SFU (a escolher no início da etapa):
+
+| Opção | Prós | Contras |
+|---|---|---|
+| **LiveKit** (serviço separado, código aberto) | Mais rápido de chegar à qualidade do Discord: simulcast, SVC, AV1/VP9/H.264, TURN embutido, maduro | Escrito em Go; é um serviço a mais para operar |
+| **mediasoup** (biblioteca com API oficial em Rust) | Fica dentro do servidor Rust | Compila um núcleo em C++; mais difícil de montar no Windows |
+| **SFU próprio com webrtc-rs** | 100% Rust | Muitos meses até igualar controle de congestionamento e qualidade |
+
+Recomendação inicial: **LiveKit**, pelo pedido de "o quanto antes". O Concord continua decidindo
+quem pode entrar em cada canal, emitindo um token de acesso curto e assinado por sessão.
+
+### Transmissão de tela em qualidade de Discord
+- Captura pelo `getDisplayMedia`: tela inteira, janela ou aba, com o **áudio** da aba ou do sistema
+  quando o navegador permitir.
+- Presets de **720p30, 1080p60, 1440p60 e 4K30/60**, como no Discord, com taxa de bits de até
+  10 Mbps ou mais.
+- `contentHint` "motion" para jogos e vídeos (prioriza fluidez) ou "detail" para texto e código
+  (prioriza nitidez).
+- Codecs com aceleração de hardware (H.264 e AV1, conforme a GPU) e simulcast para espectadores com
+  conexões diferentes.
+- Limite real: a qualidade máxima depende da GPU e do upload de quem transmite, como no Discord. A
+  tela mostra a resolução e o fps efetivos e um aviso quando o envio estiver limitado.
+
+### Recursos do canal de voz (paridade com o Discord)
+- **Status do canal de voz:** texto curto definido por quem está no canal (por exemplo "jogando X").
+- **Configurações do canal:** limite de pessoas, taxa de bits do áudio, qualidade de vídeo
+  (automática ou 720p) e permissões de quem pode falar e transmitir.
+- **Configurações pessoais:**
+  - microfone e saída de áudio;
+  - supressão de ruído e cancelamento de eco;
+  - ativação por voz (com sensibilidade) ou *push-to-talk*;
+  - volume individual de cada pessoa.
+- **Indicadores:** quem está falando, mutado ou ensurdecido, e quem está transmitindo ("AO VIVO").
+- **Moderação:** mutar ou ensurdecer pelo servidor, mover entre canais e desconectar.
+- Câmera e vários espectadores por transmissão.
+
+### LGPD da voz
+- **Nada é gravado:** áudio e vídeo só passam pelo SFU, criptografados. Gravação, se um dia existir,
+  exigirá aviso visível e consentimento de todos no canal.
+- **IP:** o SFU e o servidor TURN processam o IP de quem participa. Isso entra na política, e os
+  logs deles serão configurados para não guardar IP além do necessário.
+- **Terceiros na tela:** antes de transmitir, aparece um aviso de que a tela pode mostrar dados
+  pessoais de outras pessoas.
+- **Status do canal:** é dado guardado, então entra na exportação, na eliminação e na retenção.
+- **Política:** sobe de versão, porque microfone e câmera são um tratamento novo, o que pede novo
+  aceite.
+
+## Depois da voz
+
+A ordem combinada é voz primeiro e, em seguida, a importação do Discord e os bots, descritos abaixo.
 
 ## Pedido: importar servidores do Discord
 
@@ -78,5 +138,4 @@ que nunca aceitaram a política do Concord.
 | Responder e mencionar (@apelido) | Médio | — |
 | Imagens e arquivos | Médio | Remover metadados (EXIF/GPS), limitar tipo e tamanho, incluir na eliminação |
 | Mensagens diretas | Médio | Avaliar criptografia ponta a ponta |
-| Canais de voz (WebRTC) | Alto | Não gravar áudio; política nova |
 | Produção (HTTPS, Docker, backups) | Médio | Ver pendências em [LGPD.md](LGPD.md) |
