@@ -111,10 +111,13 @@ async function onVoiceToken(m) {
   try {
     await room.connect(url, m.token, { autoSubscribe: false });
   } catch (e) {
-    console.error(e);
+    console.error("Falha ao conectar à voz", url, e);
+    const channel = m.channel_id;
     cleanupVoice();
-    send({ type: "voice_leave" });
-    toast("Não foi possível conectar à voz. Verifique se o firewall libera o LiveKit (TCP 7880/7881 e UDP 50000–50100).");
+    send({ type: "voice_leave", channel_id: channel });
+    // O motivo real ajuda a separar rede, extensão do navegador e servidor.
+    const reason = String(e?.message ?? e).slice(0, 160);
+    toast(`Não foi possível conectar à voz (${reason}). Se usa bloqueador de anúncios ou rede corporativa, tente em outra rede ou numa janela anônima.`);
     renderVoiceAll();
     return;
   }
