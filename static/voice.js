@@ -579,12 +579,13 @@ function voiceModerationItems(server, user) {
   const s = (state.voiceStates.get(server.id) ?? []).find((x) => x.user.id === user.id);
   if (!s) return [];
   const act = (action) => () => send({ type: "voice_moderate", server_id: server.id, user_id: user.id, action });
+  // Alternâncias com caixinha (docs/DESIGN.md › Menu de contexto).
   return [
     "-",
-    { label: s.server_muted ? "Remover silêncio do servidor" : "Silenciar no servidor", onClick: act(s.server_muted ? "unmute" : "mute") },
-    { label: s.server_deafened ? "Reativar áudio (servidor)" : "Ensurdecer no servidor", onClick: act(s.server_deafened ? "undeafen" : "deafen") },
-    { label: "Mover para outro canal…", onClick: () => moveUser(server, s) },
-    { label: "Desconectar da voz", danger: true, onClick: act("disconnect") },
+    { label: "Silenciar no servidor", danger: true, checked: s.server_muted, onClick: act(s.server_muted ? "unmute" : "mute") },
+    { label: "Ensurdecer no servidor", danger: true, checked: s.server_deafened, onClick: act(s.server_deafened ? "undeafen" : "deafen") },
+    { label: "Mover para outro canal…", icon: "move", onClick: () => moveUser(server, s) },
+    { label: "Desconectar da voz", icon: "hangup", danger: true, onClick: act("disconnect") },
   ];
 }
 
@@ -790,7 +791,7 @@ function renderVoiceView() {
 // ---------- ligações com a interface ----------
 $("#btn-mute").onclick = toggleMute;
 $("#btn-deafen").onclick = toggleDeafen;
-$("#btn-voice-settings").onclick = voiceSettings;
+$("#btn-voice-settings").onclick = () => openSettings("user", "account");
 $("#vp-leave").onclick = voiceLeave;
 $("#vp-camera").onclick = toggleCamera;
 $("#vp-screen").onclick = toggleScreenShare;

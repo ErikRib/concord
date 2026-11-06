@@ -238,7 +238,45 @@ async function confirmTyping(title, desc, word) {
   return r && r.v.toUpperCase() === word.toUpperCase();
 }
 
-// ---------- menu suspenso ----------
+// ---------- ícones (traço 2px, 24x24; ver docs/DESIGN.md) ----------
+const ICONS = {
+  invite: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M19 8v6M22 11h-6",
+  settings: "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
+  flag: "M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7",
+  ban: "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0zM4.9 4.9l14.2 14.2",
+  leave: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
+  trash: "M3 6h18M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2",
+  plus: "M12 5v14M5 12h14",
+  link: "M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7",
+  user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  star: "M12 2l3 7h7l-5.5 4.5 2 7.5-6.5-4-6.5 4 2-7.5L2 9h7z",
+  volume: "M11 5 6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14",
+  move: "M5 12h14M12 5l7 7-7 7",
+  hangup: "M10.7 13.3a16 16 0 0 0 3 2.3l1.3-1.3a2 2 0 0 1 2.1-.4c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.5 4.2 2 2 0 0 1 4.5 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.4 2.1L8.4 9.7M23 1 1 23",
+  edit: "M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4z",
+  copy: "M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+};
+
+function icon(name, cls = "mi-icon") {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", cls);
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", ICONS[name] ?? "");
+  svg.append(p);
+  return svg;
+}
+
+// ---------- menu de contexto ----------
+// Item: { label, icon?, danger?, checked? (caixinha à direita), onClick }. "-" = divisória.
 let openMenu = null;
 function closeMenu() {
   openMenu?.remove();
@@ -250,15 +288,27 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(
 function showMenu(event, items) {
   event.stopPropagation();
   closeMenu();
-  const list = items.filter(Boolean);
+  // Remove divisórias repetidas, no começo ou no fim.
+  const list = items.filter(Boolean).filter((it, i, arr) => it !== "-" || (i > 0 && i < arr.length - 1 && arr[i - 1] !== "-"));
   if (list.length === 0) return;
   const menu = el("div", "menu");
+  menu.setAttribute("role", "menu");
   for (const it of list) {
     if (it === "-") {
       menu.append(el("div", "menu-sep"));
       continue;
     }
-    menu.append(button(it.label, it.danger ? "menu-item danger" : "menu-item", () => { closeMenu(); it.onClick(); }));
+    const b = el("button", it.danger ? "menu-item danger" : "menu-item");
+    b.type = "button";
+    b.setAttribute("role", it.checked === undefined ? "menuitem" : "menuitemcheckbox");
+    if (it.icon) b.append(icon(it.icon));
+    b.append(el("span", "mi-label", it.label));
+    if (it.checked !== undefined) {
+      b.setAttribute("aria-checked", String(!!it.checked));
+      b.append(el("span", it.checked ? "menu-check on" : "menu-check", it.checked ? "✓" : ""));
+    }
+    b.onclick = () => { closeMenu(); it.onClick(); };
+    menu.append(b);
   }
   document.body.append(menu);
   const r = event.currentTarget.getBoundingClientRect();
@@ -300,7 +350,7 @@ const state = {
   voiceStates: new Map(), // serverId -> [VoiceStateView]
   voiceEnabled: false,
   focus: null, // { server_id, channel_id } pedido pelo servidor
-  panel: null, // painel aberto: "reports" | "bans"
+  collapsed: new Set(load("concord.collapsed", [])), // categorias recolhidas: "servidor:tipo"
 };
 let ws = null;
 let reconnect = true;
@@ -399,7 +449,7 @@ function handle(m) {
     case "server_updated": {
       upsertServer(m.server);
       if (!applyFocus()) refresh();
-      if (state.panel === "bans" && m.server.id === state.serverId) renderBansPanel();
+      refreshSettings(m.server.id);
       break;
     }
 
@@ -408,6 +458,7 @@ function handle(m) {
       state.servers = state.servers.filter((s) => s.id !== m.server_id);
       state.reports.delete(m.server_id);
       if (had) refresh();
+      refreshSettings(m.server_id);
       break;
     }
 
@@ -499,7 +550,7 @@ function handle(m) {
     case "reports":
       state.reports.set(m.server_id, m.reports);
       renderServers();
-      if (state.panel === "reports" && m.server_id === state.serverId) renderReportsPanel();
+      refreshSettings(m.server_id);
       break;
 
     case "my_data":
@@ -514,7 +565,7 @@ function handle(m) {
       if (state.me) purgeUser(state.me.id);
       state.online = [];
       renderMembers();
-      hide("#privacy");
+      closeSettings();
       $("#goodbye-text").textContent =
         `Seus dados foram eliminados do servidor e deste navegador (${m.messages_removed} mensagem(ns) removida(s)).`;
       show("#goodbye");
@@ -624,17 +675,378 @@ async function rename() {
   hello();
 }
 
-$("#open-privacy").onclick = () => show("#privacy");
-$("#privacy-close").onclick = () => hide("#privacy");
-$("#privacy").onkeydown = (e) => { if (e.key === "Escape") hide("#privacy"); };
-$("#export-data").onclick = () => send({ type: "export_my_data" });
-$("#privacy-rename").onclick = () => { hide("#privacy"); rename(); };
-$("#delete-data").onclick = async () => {
+async function deleteMyData() {
   if (await confirmTyping("Apagar meus dados", "Todas as suas mensagens e seu registro serão eliminados.", "APAGAR")) {
     send({ type: "delete_my_data" });
   }
-};
+}
 $("#goodbye-restart").onclick = () => location.reload();
+
+// ---------- tela de configurações (docs/DESIGN.md › Tela de configurações) ----------
+const settingsState = { kind: null, section: null, serverId: null };
+
+function openSettings(kind, section, serverId = null) {
+  closeMenu();
+  Object.assign(settingsState, { kind, section, serverId });
+  renderSettings();
+  show("#settings");
+}
+
+function closeSettings() {
+  settingsState.kind = null;
+  hide("#settings");
+}
+
+document.addEventListener("keydown", (e) => {
+  // Esc fecha a tela, a menos que um diálogo esteja aberto por cima.
+  if (e.key === "Escape" && settingsState.kind && $("#modal").classList.contains("hidden")) closeSettings();
+});
+
+/** Redesenha a tela se ela estiver mostrando este servidor (ou a do usuário). */
+function refreshSettings(serverId) {
+  if (!settingsState.kind) return;
+  if (settingsState.kind === "server" && serverId && settingsState.serverId !== serverId) return;
+  renderSettings();
+}
+
+function renderSettings() {
+  const def = settingsState.kind === "server" ? serverSettingsDef() : userSettingsDef();
+  if (!def) return closeSettings();
+  const items = def.groups.flatMap((g) => g.items.filter(Boolean));
+  let current = items.find((i) => i.id === settingsState.section && i.render);
+  if (!current) {
+    current = items.find((i) => i.render);
+    settingsState.section = current.id;
+  }
+
+  const root = $("#settings");
+  root.replaceChildren();
+  const navWrap = el("div", "settings-nav");
+  const nav = el("nav");
+  nav.setAttribute("aria-label", def.title);
+  for (const g of def.groups) {
+    const groupItems = g.items.filter(Boolean);
+    if (groupItems.length === 0) continue;
+    nav.append(el("div", "nav-label", g.label));
+    for (const it of groupItems) {
+      const cls = [it === current ? "active" : "", it.danger ? "danger" : ""].join(" ").trim() || null;
+      const b = button(it.label, cls, () => {
+        if (it.action) return it.action();
+        settingsState.section = it.id;
+        renderSettings();
+      });
+      if (it.count) b.append(el("span", "badge", String(it.count)));
+      nav.append(b);
+    }
+  }
+  navWrap.append(nav);
+
+  const content = el("div", "settings-content");
+  current.render(content);
+
+  const close = el("div", "settings-close");
+  const x = button("✕", null, closeSettings);
+  x.title = "Fechar (Esc)";
+  x.setAttribute("aria-label", "Fechar configurações");
+  close.append(x, el("span", null, "ESC"));
+  root.append(navWrap, content, close);
+}
+
+function settingsHeader(c, title, lead) {
+  c.append(el("h1", null, title));
+  if (lead) c.append(el("p", "lead", lead));
+}
+
+function settingsSection(c, title, help) {
+  const s = el("section");
+  if (title) s.append(el("h3", null, title));
+  if (help) s.append(el("p", "help", help));
+  c.append(s);
+  return s;
+}
+
+function textField(value, maxLength, placeholder = "") {
+  const inp = el("input", "field");
+  inp.type = "text";
+  inp.value = value ?? "";
+  inp.maxLength = maxLength;
+  inp.placeholder = placeholder;
+  return inp;
+}
+
+function switchToggle(checked, onChange) {
+  const label = el("label", "switch");
+  const inp = el("input");
+  inp.type = "checkbox";
+  inp.checked = checked;
+  inp.onchange = () => onChange(inp.checked);
+  label.append(inp, el("span"));
+  return label;
+}
+
+// ---- configurações do usuário ----
+function userSettingsDef() {
+  return {
+    title: "Configurações do usuário",
+    groups: [
+      { label: "Configurações do usuário", items: [
+        { id: "account", label: "Minha conta", render: renderAccountSettings },
+        { id: "voice", label: "Voz e vídeo", render: renderVoiceSettingsSection },
+      ] },
+      { label: "Privacidade", items: [
+        { id: "privacy", label: "Privacidade e dados", render: renderPrivacySettings },
+      ] },
+    ],
+  };
+}
+
+function profilePreview(name, color) {
+  const card = el("div", "preview-card");
+  const banner = el("div", "banner");
+  banner.style.background = `linear-gradient(180deg, ${color}, #1f1f24)`;
+  const body = el("div", "pc-body");
+  const av = el("div", "pc-icon round", [...(name || "?")][0]);
+  av.style.background = color;
+  av.style.color = "#fff";
+  const meta = el("div", "pc-meta");
+  meta.append(el("span", "dot on", "Online"));
+  body.append(av, el("h4", null, name || "…"), meta);
+  card.append(banner, body);
+  return card;
+}
+
+function renderAccountSettings(c) {
+  settingsHeader(c, "Minha conta", "Sem cadastro: seu perfil é só um apelido e uma cor, guardados neste navegador e no servidor (LGPD, art. 18, III: você pode corrigi-los quando quiser).");
+  const split = el("div", "settings-split");
+  const form = el("div");
+  let name = identity.name;
+  let color = identity.color;
+  const preview = el("div");
+  const updatePreview = () => preview.replaceChildren(profilePreview(name, color));
+
+  const s1 = settingsSection(form, "Apelido", "Como você aparece para os outros, inclusive nas mensagens antigas.");
+  const nameInput = textField(name, 32, "Seu apelido");
+  nameInput.oninput = () => { name = nameInput.value.trim(); updatePreview(); };
+  s1.append(nameInput);
+
+  const s2 = settingsSection(form, "Cor", "Cor do seu nome e do seu avatar.");
+  const sw = el("div", "swatches");
+  for (const col of COLORS) {
+    const b = el("button", col === color ? "swatch on" : "swatch");
+    b.type = "button";
+    b.style.background = col;
+    b.title = col;
+    b.setAttribute("aria-label", `Cor ${col}`);
+    b.onclick = () => {
+      color = col;
+      sw.querySelectorAll(".swatch").forEach((x) => x.classList.toggle("on", x === b));
+      updatePreview();
+    };
+    sw.append(b);
+  }
+  s2.append(sw);
+
+  const s3 = settingsSection(form, "Seu id pseudônimo", "Gerado a partir de um segredo que só existe neste navegador. Serve, por exemplo, para virar administrador da instância (CONCORD_ADMINS).");
+  const idRow = el("div", "copy-row");
+  const idInput = textField(state.me?.id ?? "", 64);
+  idInput.readOnly = true;
+  idRow.append(idInput, button("Copiar", null, () => copyText(idInput.value, idInput)));
+  s3.append(idRow);
+
+  const save = el("section");
+  const row = el("div", "row");
+  row.append(button("Salvar alterações", "btn primary", () => {
+    if (!name) return toast("O apelido não pode ficar vazio");
+    identity.name = name;
+    identity.color = color;
+    store("concord.identity", identity);
+    renderMe();
+    hello();
+    toast("Perfil atualizado", true);
+  }));
+  save.append(row);
+  form.append(save);
+
+  updatePreview();
+  split.append(form, preview);
+  c.append(split);
+}
+
+function renderVoiceSettingsSection(c) {
+  settingsHeader(c, "Voz e vídeo", "Preferências de microfone, saída de áudio e transmissão. Ficam só neste navegador.");
+  const s = settingsSection(c, "Resumo");
+  const modeText = vset.mode === "ptt" ? `Apertar para falar (tecla ${vset.pttKey})` : "Ativação por voz";
+  const list = el("div", "stack");
+  list.append(
+    el("div", null, `Modo de entrada: ${modeText}`),
+    el("div", null, `Supressão de ruído: ${vset.noise ? "ligada" : "desligada"} · Cancelamento de eco: ${vset.echo ? "ligado" : "desligado"}`),
+    el("div", null, `Codec de vídeo: ${vset.codec.toUpperCase()} · Qualidade preferida da tela: ${vset.preset}`),
+  );
+  s.append(list);
+  const s2 = settingsSection(c);
+  s2.append(button("Alterar dispositivos e preferências", "btn primary", async () => {
+    await voiceSettings();
+    renderSettings();
+  }));
+}
+
+function renderPrivacySettings(c) {
+  settingsHeader(c, "Privacidade e dados", "Seus direitos como titular (LGPD, art. 18), sem precisar pedir a ninguém.");
+  const s = settingsSection(c);
+  const stack = el("div", "stack");
+  const row = (title, desc, onClick, danger) => {
+    const b = el("button", danger ? "row-btn danger" : "row-btn");
+    b.type = "button";
+    b.append(el("strong", null, title), el("span", null, desc));
+    b.onclick = onClick;
+    return b;
+  };
+  const policy = el("a", "row-btn");
+  policy.href = "/privacidade";
+  policy.target = "_blank";
+  policy.rel = "noopener";
+  policy.append(el("strong", null, "Política de Privacidade"), el("span", null, "O que coletamos, por quê e por quanto tempo."));
+  stack.append(
+    row("Baixar meus dados", "Arquivo JSON com perfil, aceite, servidores, mensagens, denúncias, moderação e status de voz.", () => send({ type: "export_my_data" })),
+    policy,
+    row("Apagar meus dados e sair", "Remove suas mensagens e revoga o consentimento. Servidores seus passam para um moderador. Não pode ser desfeito.", deleteMyData, true),
+  );
+  s.append(stack);
+}
+
+// ---- configurações do servidor ----
+function serverSettingsDef() {
+  const s = state.servers.find((x) => x.id === settingsState.serverId);
+  if (!s?.can_moderate) return null;
+  const reports = state.reports.get(s.id)?.length ?? 0;
+  return {
+    title: `Configurações de ${s.name}`,
+    groups: [
+      { label: s.name, items: [
+        s.can_manage && { id: "profile", label: "Perfil do servidor", render: (c) => renderServerProfile(c, s) },
+        { id: "invites", label: "Convites", render: (c) => renderInvites(c, s) },
+      ] },
+      { label: "Moderação", items: [
+        { id: "reports", label: "Denúncias", count: reports, render: (c) => renderReports(c, s) },
+        { id: "bans", label: "Banidos", count: s.bans?.length ?? 0, render: (c) => renderBans(c, s) },
+      ] },
+      { label: "Zona de perigo", items: [
+        s.can_manage && { id: "delete", label: "Apagar servidor", danger: true, action: () => deleteServer(s) },
+      ] },
+    ],
+  };
+}
+
+function serverPreview(s, name, isPublic) {
+  const card = el("div", "preview-card");
+  const body = el("div", "pc-body");
+  const onlineIds = new Set(state.online.map((u) => u.id));
+  const online = s.members ? s.members.filter((u) => onlineIds.has(u.id)).length : state.online.length;
+  const meta = el("div", "pc-meta");
+  meta.append(el("span", "dot on", `${online} online`));
+  if (s.members) meta.append(el("span", "dot", `${s.members.length} membros`));
+  body.append(el("div", "pc-icon", initials(name || "?")), el("h4", null, name || "…"), meta, el("p", "muted", isPublic ? "Público: qualquer pessoa desta instância pode entrar." : "Privado: só com convite."));
+  card.append(el("div", "banner"), body);
+  return card;
+}
+
+function renderServerProfile(c, s) {
+  settingsHeader(c, "Perfil do servidor", "Como o servidor aparece para quem participa e nos convites.");
+  const split = el("div", "settings-split");
+  const form = el("div");
+  let name = s.name;
+  let isPublic = s.public;
+  const preview = el("div");
+  const update = () => preview.replaceChildren(serverPreview(s, name, isPublic));
+
+  const s1 = settingsSection(form, "Nome");
+  const inp = textField(name, 50);
+  inp.oninput = () => { name = inp.value.trim(); update(); };
+  s1.append(inp);
+
+  const s2 = settingsSection(form);
+  const tr = el("div", "toggle-row");
+  const txt = el("div");
+  txt.append(el("h3", null, "Servidor público"), el("p", "help", "Ligado: qualquer pessoa desta instância vê e participa. Desligado: só entra quem tiver o convite (padrão, privacidade por padrão)."));
+  tr.append(txt, switchToggle(isPublic, (v) => { isPublic = v; update(); }));
+  s2.append(tr);
+
+  const s3 = el("section");
+  s3.append(button("Salvar alterações", "btn primary", () => {
+    if (!name) return toast("O nome não pode ficar vazio");
+    send({ type: "update_server", server_id: s.id, name, public: isPublic });
+    toast("Alterações enviadas", true);
+  }));
+  form.append(s3);
+  update();
+  split.append(form, preview);
+  c.append(split);
+}
+
+function renderInvites(c, s) {
+  settingsHeader(c, "Convites", s.public ? "Este servidor é público, mas o link leva direto para ele." : "Quem tiver o link pode entrar. Gerar um novo invalida o atual.");
+  const sec = settingsSection(c, "Link de convite");
+  const row = el("div", "copy-row");
+  const inp = textField(inviteLink(s), 300);
+  inp.readOnly = true;
+  row.append(inp, button("Copiar", null, () => copyText(inp.value, inp)));
+  sec.append(row);
+  const sec2 = settingsSection(c, "Gerar novo link", "Use se o link vazou para quem não deveria entrar.");
+  sec2.append(button("Gerar novo link", "btn secondary", () => send({ type: "regenerate_invite", server_id: s.id })));
+}
+
+function renderReports(c, s) {
+  settingsHeader(c, "Denúncias", "Os moderadores veem a mensagem e o motivo, mas nunca quem denunciou.");
+  const reports = state.reports.get(s.id) ?? [];
+  const sec = settingsSection(c);
+  if (reports.length === 0) {
+    sec.append(el("div", "empty-note", "Nenhuma denúncia pendente."));
+    return;
+  }
+  const stack = el("div", "stack");
+  for (const r of reports) {
+    const item = el("div", "item");
+    const head = el("div", "item-head");
+    head.append(el("strong", null, categoryLabel(r.category)), el("span", null, `#${r.channel_name} · ${formatTime(r.created_at)}`));
+    const quote = el("div", "item-quote");
+    const who = el("strong", null, r.message.author.name + ": ");
+    who.style.color = r.message.author.color;
+    quote.append(who, r.message.content);
+    item.append(head, quote);
+    if (r.details) item.append(el("div", "muted", `Detalhes: ${r.details}`));
+    const actions = el("div", "item-actions");
+    actions.append(
+      button("Apagar mensagem", "danger", () => send({ type: "resolve_report", report_id: r.id, delete_message: true })),
+      button("Banir autor", null, () => banUser(s, r.message.author)),
+      button("Descartar denúncia", null, () => send({ type: "resolve_report", report_id: r.id, delete_message: false })),
+    );
+    item.append(actions);
+    stack.append(item);
+  }
+  sec.append(stack);
+}
+
+function renderBans(c, s) {
+  settingsHeader(c, "Banidos", "Banimentos expiram com o prazo de retenção. A pessoa banida recebeu o motivo.");
+  const bans = s.bans ?? [];
+  const sec = settingsSection(c);
+  if (bans.length === 0) {
+    sec.append(el("div", "empty-note", "Ninguém banido."));
+    return;
+  }
+  const stack = el("div", "stack");
+  for (const b of bans) {
+    const item = el("div", "item");
+    const head = el("div", "item-head");
+    head.append(el("strong", null, b.name), el("span", null, formatTime(b.at)));
+    item.append(head, el("div", null, `Motivo: ${b.reason}`));
+    const actions = el("div", "item-actions");
+    actions.append(button("Revogar banimento", null, () => send({ type: "unban_user", server_id: s.id, user_id: b.user_id })));
+    item.append(actions);
+    stack.append(item);
+  }
+  sec.append(stack);
+}
 
 // ---------- servidores: criar, entrar, gerenciar ----------
 async function createServer() {
@@ -675,18 +1087,6 @@ async function showInvite(server) {
   if (r) send({ type: "regenerate_invite", server_id: server.id });
 }
 
-async function serverSettings(server) {
-  const r = await dialog({
-    title: "Configurações do servidor",
-    submit: "Salvar",
-    fields: [
-      { name: "name", label: "Nome", value: server.name, required: true },
-      { name: "public", type: "checkbox", value: server.public, label: "Público: qualquer pessoa desta instância pode ver e participar." },
-    ],
-  });
-  if (r) send({ type: "update_server", server_id: server.id, name: r.name, public: r.public });
-}
-
 async function deleteServer(server) {
   if (await confirmTyping(`Apagar "${server.name}"`, "Todos os canais e mensagens serão apagados para sempre.", server.name)) {
     send({ type: "delete_server", server_id: server.id });
@@ -700,23 +1100,28 @@ async function leaveServer(server) {
 
 $("#add-server").onclick = (e) =>
   showMenu(e, [
-    { label: "Criar servidor", onClick: createServer },
-    { label: "Entrar com convite", onClick: joinServer },
+    { label: "Criar servidor", icon: "plus", onClick: createServer },
+    { label: "Entrar com convite", icon: "link", onClick: joinServer },
   ]);
 
 $("#server-header").onclick = (e) => {
   const s = currentServer();
   if (!s) return;
   const reports = state.reports.get(s.id)?.length ?? 0;
+  const member = s.role === "member" || s.role === "moderator";
   showMenu(e, [
-    s.can_moderate && { label: "Convidar pessoas", onClick: () => showInvite(s) },
-    s.can_moderate && { label: `Denúncias (${reports})`, onClick: () => openPanel("reports") },
-    s.can_moderate && { label: `Banidos (${s.bans?.length ?? 0})`, onClick: () => openPanel("bans") },
-    s.can_manage && { label: "Configurações do servidor", onClick: () => serverSettings(s) },
-    (s.role === "member" || s.role === "moderator") && "-",
-    (s.role === "member" || s.role === "moderator") && { label: "Sair do servidor", danger: true, onClick: () => leaveServer(s) },
-    s.can_manage && "-",
-    s.can_manage && { label: "Apagar servidor", danger: true, onClick: () => deleteServer(s) },
+    s.can_moderate && { label: "Convidar pessoas", icon: "invite", onClick: () => showInvite(s) },
+    s.can_moderate && { label: "Configurações do servidor", icon: "settings", onClick: () => openSettings("server", s.can_manage ? "profile" : "invites", s.id) },
+    s.can_moderate && { label: "Criar canal de texto", icon: "plus", onClick: () => createChannel(s, "text") },
+    s.can_moderate && { label: "Criar canal de voz", icon: "volume", onClick: () => createChannel(s, "voice") },
+    "-",
+    s.can_moderate && { label: reports ? `Denúncias (${reports})` : "Denúncias", icon: "flag", onClick: () => openSettings("server", "reports", s.id) },
+    s.can_moderate && { label: "Banidos", icon: "ban", onClick: () => openSettings("server", "bans", s.id) },
+    "-",
+    { label: "Configurações do usuário", icon: "user", onClick: () => openSettings("user", "account") },
+    "-",
+    member && { label: "Sair do servidor", icon: "leave", danger: true, onClick: () => leaveServer(s) },
+    s.can_manage && { label: "Apagar servidor", icon: "trash", danger: true, onClick: () => deleteServer(s) },
   ]);
 };
 
@@ -727,18 +1132,19 @@ function userMenu(e, user) {
   const isMe = user.id === state.me.id;
   const role = roleIn(s, user.id);
   const inMyCall = !isMe && voice.room?.getParticipantByIdentity(user.id);
+  const canAct = !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage);
   showMenu(e, [
-    isMe && { label: "Mudar meu apelido", onClick: rename },
-    inMyCall && { label: `Volume de ${user.name} (${Math.round((vset.volumes[user.id] ?? 1) * 100)}%)`, onClick: () => setUserVolume(user) },
+    isMe && { label: "Minha conta", icon: "user", onClick: () => openSettings("user", "account") },
+    inMyCall && { label: `Volume (${Math.round((vset.volumes[user.id] ?? 1) * 100)}%)`, icon: "volume", onClick: () => setUserVolume(user) },
     !isMe && s.can_manage && role !== "owner" && {
-      label: role === "mod" ? "Remover moderador" : "Tornar moderador",
+      label: "Moderador(a)",
+      icon: "star",
+      checked: role === "mod",
       onClick: () => send({ type: "set_moderator", server_id: s.id, user_id: user.id, enabled: role !== "mod" }),
     },
-    ...(role !== "owner" && (role !== "mod" || s.can_manage) ? voiceModerationItems(s, user) : []),
-    !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage) && "-",
-    !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage) && {
-      label: "Banir do servidor", danger: true, onClick: () => banUser(s, user),
-    },
+    ...(canAct ? voiceModerationItems(s, user) : []),
+    canAct && "-",
+    canAct && { label: `Banir ${user.name}`, icon: "ban", danger: true, onClick: () => banUser(s, user) },
   ]);
 }
 
@@ -774,75 +1180,6 @@ async function deleteChannel(server, channel) {
   if (r) send({ type: "delete_channel", channel_id: channel.id });
 }
 
-function openPanel(kind) {
-  state.panel = kind;
-  if (kind === "reports") renderReportsPanel();
-  else renderBansPanel();
-  show("#panel");
-}
-
-function closePanel() {
-  state.panel = null;
-  hide("#panel");
-}
-$("#panel-close").onclick = closePanel;
-$("#panel").onkeydown = (e) => { if (e.key === "Escape") closePanel(); };
-
-function renderReportsPanel() {
-  const s = currentServer();
-  if (!s?.can_moderate) return closePanel();
-  const reports = state.reports.get(s.id) ?? [];
-  $("#panel-title").textContent = `Denúncias — ${s.name}`;
-  const body = $("#panel-body");
-  body.replaceChildren();
-  if (reports.length === 0) {
-    body.append(el("div", "empty-note", "Nenhuma denúncia pendente."));
-    return;
-  }
-  for (const r of reports) {
-    const item = el("div", "item");
-    const head = el("div", "item-head");
-    head.append(el("strong", null, categoryLabel(r.category)), el("span", null, `#${r.channel_name} · ${formatTime(r.created_at)}`));
-    const quote = el("div", "item-quote");
-    const who = el("strong", null, r.message.author.name + ": ");
-    who.style.color = r.message.author.color;
-    quote.append(who, r.message.content);
-    item.append(head, quote);
-    if (r.details) item.append(el("div", "muted", `Detalhes: ${r.details}`));
-    const actions = el("div", "item-actions");
-    actions.append(
-      button("Apagar mensagem", "danger", () => send({ type: "resolve_report", report_id: r.id, delete_message: true })),
-      button("Banir autor", null, () => banUser(s, r.message.author)),
-      button("Descartar denúncia", null, () => send({ type: "resolve_report", report_id: r.id, delete_message: false })),
-    );
-    item.append(actions);
-    body.append(item);
-  }
-}
-
-function renderBansPanel() {
-  const s = currentServer();
-  if (!s?.can_moderate) return closePanel();
-  $("#panel-title").textContent = `Banidos — ${s.name}`;
-  const body = $("#panel-body");
-  body.replaceChildren();
-  const bans = s.bans ?? [];
-  if (bans.length === 0) {
-    body.append(el("div", "empty-note", "Ninguém banido."));
-    return;
-  }
-  for (const b of bans) {
-    const item = el("div", "item");
-    const head = el("div", "item-head");
-    head.append(el("strong", null, b.name), el("span", null, formatTime(b.at)));
-    item.append(head, el("div", null, `Motivo: ${b.reason}`));
-    const actions = el("div", "item-actions");
-    actions.append(button("Revogar banimento", null, () => send({ type: "unban_user", server_id: s.id, user_id: b.user_id })));
-    item.append(actions);
-    body.append(item);
-  }
-}
-
 // ---------- navegação ----------
 function ensureSelection() {
   if (!currentServer()) state.serverId = state.servers[0]?.id ?? null;
@@ -871,7 +1208,6 @@ function refresh(forceBottom) {
   const changed = renderedChannel !== state.channelId;
   renderedChannel = state.channelId;
   renderChat(changed || forceBottom ? "bottom" : "keep");
-  if (state.panel && !currentServer()?.can_moderate) closePanel();
 }
 
 function selectServer(id) {
@@ -914,17 +1250,33 @@ function renderChannels() {
   box.replaceChildren();
   if (!server) return;
 
+  // Categorias recolhíveis; recolhida, mostra só o canal aberto (e quem está em voz).
   const section = (title, kind) => {
+    const key = `${server.id}:${kind}`;
+    const collapsed = state.collapsed.has(key);
     const channels = server.channels.filter((c) => (c.kind ?? "text") === kind);
-    const head = el("div", "section-title");
-    head.append(el("span", null, title));
+    const head = el("div", collapsed ? "category collapsed" : "category");
+    const toggle = button("", "cat-toggle", () => {
+      if (state.collapsed.has(key)) state.collapsed.delete(key);
+      else state.collapsed.add(key);
+      store("concord.collapsed", [...state.collapsed]);
+      renderChannels();
+    });
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.append(el("span", "chev", "▾"), el("span", null, title));
+    head.append(toggle);
     if (server.can_moderate) {
-      const add = button("+", null, () => createChannel(server, kind));
+      const add = button("+", "cat-add", () => createChannel(server, kind));
       add.title = kind === "voice" ? "Criar canal de voz" : "Criar canal de texto";
+      add.setAttribute("aria-label", add.title);
       head.append(add);
     }
     const list = el("ul", "channel-list");
-    for (const c of channels) list.append(channelItem(server, c));
+    const voiceNow = new Set((state.voiceStates.get(server.id) ?? []).map((s) => s.channel_id));
+    for (const c of channels) {
+      if (collapsed && c.id !== state.channelId && !voiceNow.has(c.id)) continue;
+      list.append(channelItem(server, c));
+    }
     box.append(head, list);
   };
   section("Canais de texto", "text");
@@ -938,8 +1290,12 @@ function channelItem(server, c) {
   const name = el("span", "ch-name", c.name);
   row.append(name);
   if (c.kind === "voice" && c.user_limit) {
+    // Pílula "pessoas | limite".
     const n = (state.voiceStates.get(server.id) ?? []).filter((s) => s.channel_id === c.id).length;
-    row.append(el("span", "ch-count", `${n}/${c.user_limit}`));
+    const pill = el("span", "ch-count");
+    pill.title = `${n} de ${c.user_limit} pessoas`;
+    pill.append(el("span", null, String(n).padStart(2, "0")), el("span", null, String(c.user_limit).padStart(2, "0")));
+    row.append(pill);
   }
   if (server.can_moderate) {
     const gear = button("⚙", "ch-tool", (e) => { e.stopPropagation(); channelSettings(server, c); });
@@ -981,8 +1337,8 @@ function channelItem(server, c) {
   return li;
 }
 
-function flag(icon, title, byMod) {
-  const f = el("span", byMod ? "vu-flag by-mod" : "vu-flag", icon);
+function flag(symbol, title, byMod) {
+  const f = el("span", byMod ? "vu-flag by-mod" : "vu-flag", symbol);
   f.title = title;
   return f;
 }
@@ -1051,13 +1407,22 @@ function renderMessages(scroll) {
     box.append(el("div", "empty", state.loadingOlder.has(ch.id) ? "Carregando mensagens antigas…" : "Role para cima para ver mensagens antigas"));
   } else {
     const intro = el("div", "channel-intro");
-    intro.append(el("h1", null, `Bem-vindo(a) a #${ch.name}!`), el("p", null, `Este é o começo do canal #${ch.name}.`));
+    intro.append(el("div", "intro-icon", "#"), el("h1", null, `Bem-vindo(a) a #${ch.name}!`), el("p", null, `Este é o começo do canal #${ch.name}.`));
     box.append(intro);
   }
 
   let prev = null;
   for (const m of list) {
-    const grouped = prev && prev.author.id === m.author.id && m.timestamp - prev.timestamp < 5 * 60 * 1000;
+    // Divisória de data quando o dia muda (ou antes da primeira mensagem).
+    const day = new Date(m.timestamp).toDateString();
+    const newDay = !prev || new Date(prev.timestamp).toDateString() !== day;
+    if (newDay) {
+      const label = new Date(m.timestamp).toLocaleDateString("pt-BR", { day: "numeric", month: "long", year: "numeric" });
+      const div = el("div", "date-divider", label);
+      div.setAttribute("role", "separator");
+      box.append(div);
+    }
+    const grouped = !newDay && prev && prev.author.id === m.author.id && m.timestamp - prev.timestamp < 5 * 60 * 1000;
     const row = el("div", grouped ? "msg grouped" : "msg");
     const body = el("div", "msg-body");
 
@@ -1151,26 +1516,30 @@ function renderMembers() {
     offline = [];
     $("#members-title").textContent = server ? "Servidor público" : "";
   }
-  const rank = (u) => ({ owner: 0, mod: 1 })[roleIn(server, u.id)] ?? 2;
-  const byRole = (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "pt-BR");
-
+  const byName = (a, b) => a.name.localeCompare(b.name, "pt-BR");
   const list = $("#member-list");
   list.replaceChildren();
   const section = (title, users, isOnline) => {
     if (users.length === 0) return;
     list.append(el("li", "member-section", `${title} — ${users.length}`));
-    for (const u of [...users].sort(byRole)) {
+    for (const u of [...users].sort(byName)) {
       const li = el("li", isOnline ? null : "offline");
+      const a = avatar(u);
+      if (isOnline) a.classList.add("status");
       const name = el("span", "name", u.name);
       name.style.color = u.color;
-      li.append(avatar(u), name);
+      li.append(a, name);
       const badge = roleBadge(server, u.id);
       if (badge) li.append(badge);
       li.onclick = (e) => userMenu(e, u);
       list.append(li);
     }
   };
-  section("Online", online, true);
+  // Seções por papel (online primeiro), depois offline.
+  const role = (u) => roleIn(server, u.id);
+  section("Dono", online.filter((u) => role(u) === "owner"), true);
+  section("Moderação", online.filter((u) => role(u) === "mod"), true);
+  section("Online", online.filter((u) => !role(u)), true);
   section("Offline", offline, false);
 }
 
@@ -1187,8 +1556,8 @@ function renderMe() {
 }
 
 // ---------- ações ----------
-$("#me-info").onclick = rename;
-$("#me-avatar").onclick = rename;
+$("#me-info").onclick = () => openSettings("user", "account");
+$("#me-avatar").onclick = () => openSettings("user", "account");
 
 const input = $("#input");
 let lastTypingSent = 0;

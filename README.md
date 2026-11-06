@@ -180,6 +180,7 @@ cargo run --release -- bench 1000000      # teste de carga num banco temporário
 
 Os detalhes e as pendências para colocar em produção estão em [docs/LGPD.md](docs/LGPD.md).
 O que vem a seguir, incluindo a importação do Discord e os bots, está em [docs/ROADMAP.md](docs/ROADMAP.md).
+A interface segue o design system de [docs/DESIGN.md](docs/DESIGN.md), com os tokens em `static/style.css`.
 
 ## Testes
 

@@ -46,8 +46,8 @@
       </div>
 
       <footer id="user-panel">
-        <div class="avatar" id="me-avatar" title="Mudar apelido"></div>
-        <div class="me-info" id="me-info" title="Mudar apelido">
+        <div class="avatar status" id="me-avatar" title="Minha conta"></div>
+        <div class="me-info" id="me-info" title="Minha conta">
           <div id="me-name"></div>
           <div class="me-sub" id="me-sub">Online</div>
         </div>
@@ -59,14 +59,8 @@
           <svg class="ic-on" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
           <svg class="ic-off" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M3 18v-6a9 9 0 0 1 14.5-7.1M21 12v6"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
         </button>
-        <button id="btn-voice-settings" class="icon-btn" title="Configurações de voz e vídeo" aria-label="Configurações de voz e vídeo">
+        <button id="btn-voice-settings" class="icon-btn" title="Configurações do usuário" aria-label="Configurações do usuário">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-        </button>
-        <button id="open-privacy" class="icon-btn" title="Privacidade e meus dados" aria-label="Privacidade e meus dados">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            <path d="m9 12 2 2 4-4"/>
-          </svg>
         </button>
       </footer>
     </aside>
@@ -109,7 +103,7 @@
           <li>Mensagens ficam visíveis a quem participa do servidor e são apagadas em até <span id="retention-days">180</span> dias.</li>
           <li>Moderadores podem apagar mensagens e banir. Se você denunciar algo, eles não ficam sabendo quem foi.</li>
           <li>Nos canais de voz, áudio, câmera e tela são transmitidos ao vivo e <strong>nunca gravados</strong>.</li>
-          <li>Você pode baixar ou apagar seus dados quando quiser, no ícone de escudo ao lado do seu nome.</li>
+          <li>Você pode baixar ou apagar seus dados quando quiser, em Configurações (engrenagem ao lado do seu nome) → Privacidade e dados.</li>
         </ul>
         <a href="/privacidade" target="_blank" rel="noopener">Ler a Política de Privacidade completa</a>
       </div>
@@ -121,45 +115,8 @@
     </form>
   </div>
 
-  <!-- Painel do titular (LGPD art. 18) -->
-  <div id="privacy" class="overlay hidden">
-    <div class="card">
-      <h2>Privacidade e meus dados</h2>
-      <p class="muted center">Seus direitos como titular (LGPD, art. 18).</p>
-      <div class="privacy-actions">
-        <button id="export-data" class="row-btn">
-          <strong>Baixar meus dados</strong>
-          <span>Arquivo JSON com seu perfil, aceite, servidores, mensagens, denúncias e moderação.</span>
-        </button>
-        <button id="privacy-rename" class="row-btn">
-          <strong>Corrigir meu apelido</strong>
-          <span>Altera como você aparece para os outros, inclusive nas mensagens antigas.</span>
-        </button>
-        <a href="/privacidade" target="_blank" rel="noopener" class="row-btn">
-          <strong>Política de Privacidade</strong>
-          <span>O que coletamos, por quê e por quanto tempo.</span>
-        </a>
-        <button id="delete-data" class="row-btn danger">
-          <strong>Apagar meus dados e sair</strong>
-          <span>Remove todas as suas mensagens e revoga seu consentimento. Servidores seus passam para um moderador. Não pode ser desfeito.</span>
-        </button>
-      </div>
-      <div class="actions">
-        <button type="button" id="privacy-close">Fechar</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Painel genérico (denúncias, banidos) -->
-  <div id="panel" class="overlay hidden">
-    <div class="card wide">
-      <h2 id="panel-title"></h2>
-      <div id="panel-body"></div>
-      <div class="actions">
-        <button type="button" id="panel-close">Fechar</button>
-      </div>
-    </div>
-  </div>
+  <!-- Tela de configurações (servidor e usuário), montada pelo app.js -->
+  <div id="settings" class="settings hidden" role="dialog" aria-modal="true"></div>
 
   <!-- Diálogo genérico, montado pelo app.js -->
   <div id="modal" class="overlay hidden">
