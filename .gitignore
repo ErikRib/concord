@@ -8,3 +8,8 @@ concord-data.json.migrado
 /tools/
 /tests/node_modules/
 /tests/package-lock.json
+
+# Chaves SSH de servidores
+*.pem
+*.key
+concord.tar.gz
