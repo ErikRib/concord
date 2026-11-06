@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concord</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="servers">
+      <div id="server-list"></div>
+      <div class="divider"></div>
+      <button id="add-server" class="server-icon add" title="Criar servidor">+</button>
+    </nav>
+
+    <aside id="sidebar">
+      <header id="server-name"></header>
+      <div id="channels">
+        <div class="section-title">
+          <span>Canais de texto</span>
+          <button id="add-channel" title="Criar canal">+</button>
+        </div>
+        <ul id="channel-list"></ul>
+      </div>
+      <footer id="user-panel">
+        <div class="avatar" id="me-avatar"></div>
+        <div class="me-info">
+          <div id="me-name"></div>
+          <div class="me-sub">Online</div>
+        </div>
+        <button id="rename" class="icon-btn" title="Mudar apelido">✎</button>
+        <button id="open-privacy" class="icon-btn" title="Privacidade e meus dados" aria-label="Privacidade e meus dados">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </button>
+      </footer>
+    </aside>
+
+    <main id="chat">
+      <header id="chat-header">
+        <span class="hash">#</span><span id="channel-name"></span>
+      </header>
+      <div id="status" class="hidden"></div>
+      <div id="messages"></div>
+      <form id="composer">
+        <textarea id="input" rows="1" maxlength="2000" autocomplete="off"></textarea>
+      </form>
+      <div id="typing"></div>
+    </main>
+
+    <aside id="members">
+      <div class="section-title"><span id="members-title">Online</span></div>
+      <ul id="member-list"></ul>
+    </aside>
+  </div>
+
+  <!-- Entrada / consentimento (LGPD art. 8º: livre, informado e inequívoco) -->
+  <div id="consent" class="overlay hidden">
+    <form id="consent-card" class="card">
+      <h2>Bem-vindo(a) ao Concord!</h2>
+      <p class="muted center">Sem cadastro: só escolha como quer ser chamado(a).</p>
+      <input id="consent-name" maxlength="32" placeholder="Seu apelido" autocomplete="off" required>
+      <div class="notice">
+        <strong>Como tratamos seus dados</strong>
+        <ul>
+          <li>Guardamos só seu apelido, sua cor, suas mensagens e a data deste aceite.</li>
+          <li>Não guardamos IP, e-mail ou dados de navegação. Sem cookies e sem publicidade.</li>
+          <li>Suas mensagens ficam visíveis a quem usa este servidor e são apagadas em até <span id="retention-days">180</span> dias.</li>
+          <li>Você pode baixar ou apagar seus dados quando quiser, no ícone de escudo ao lado do seu nome.</li>
+        </ul>
+        <a href="/privacidade" target="_blank" rel="noopener">Ler a Política de Privacidade completa</a>
+      </div>
+      <label class="check"><input type="checkbox" id="consent-policy"> Li e concordo com a Política de Privacidade.</label>
+      <label class="check"><input type="checkbox" id="consent-age"> Declaro ter 18 anos ou mais.</label>
+      <div class="actions">
+        <button type="submit" id="consent-ok" class="primary" disabled>Entrar</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Painel do titular (LGPD art. 18) -->
+  <div id="privacy" class="overlay hidden">
+    <div class="card">
+      <h2>Privacidade e meus dados</h2>
+      <p class="muted center">Seus direitos como titular (LGPD, art. 18).</p>
+      <div class="privacy-actions">
+        <button id="export-data" class="row-btn">
+          <strong>Baixar meus dados</strong>
+          <span>Arquivo JSON com seu perfil, aceite e todas as suas mensagens.</span>
+        </button>
+        <button id="privacy-rename" class="row-btn">
+          <strong>Corrigir meu apelido</strong>
+          <span>Altera como você aparece para os outros.</span>
+        </button>
+        <a href="/privacidade" target="_blank" rel="noopener" class="row-btn">
+          <strong>Política de Privacidade</strong>
+          <span>O que coletamos, por quê e por quanto tempo.</span>
+        </a>
+        <button id="delete-data" class="row-btn danger">
+          <strong>Apagar meus dados e sair</strong>
+          <span>Remove todas as suas mensagens e revoga seu consentimento. Não pode ser desfeito.</span>
+        </button>
+      </div>
+      <div class="actions">
+        <button type="button" id="privacy-close">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal genérico de texto -->
+  <div id="modal" class="overlay hidden">
+    <form id="modal-card" class="card">
+      <h2 id="modal-title"></h2>
+      <p id="modal-desc" class="muted center"></p>
+      <input id="modal-input" autocomplete="off">
+      <div class="actions">
+        <button type="button" id="modal-cancel">Cancelar</button>
+        <button type="submit" id="modal-ok" class="primary">OK</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="goodbye" class="overlay hidden">
+    <div class="card">
+      <h2>Dados apagados</h2>
+      <p class="muted center" id="goodbye-text"></p>
+      <div class="actions">
+        <button type="button" id="goodbye-restart" class="primary">Entrar de novo</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
