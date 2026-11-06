@@ -10,7 +10,9 @@ cargo run --release
 ```
 
 Abra http://localhost:3000. Outras pessoas na mesma rede acessam por `http://SEU-IP:3000`.
-Para uso fora da rede local, coloque o Concord atrás de um proxy reverso com HTTPS.
+
+**Servidor de verdade, grátis:** veja [deploy/README.md](deploy/README.md). Ele usa Oracle Cloud
+(São Paulo), DuckDNS e um único script, que configura HTTPS, voz, firewall e backup.
 
 ### Ambiente de compilação (Windows, sem administrador)
 

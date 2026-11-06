@@ -152,10 +152,12 @@ async fn main() {
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    // Em servidor, use CONCORD_HOST=127.0.0.1: só o proxy HTTPS (Caddy) acessa o Concord.
+    let host = std::env::var("CONCORD_HOST").unwrap_or_else(|_| "0.0.0.0".into());
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
-        .unwrap_or_else(|e| panic!("Não foi possível usar a porta {port}: {e}"));
-    println!("Concord rodando em http://localhost:{port}");
+        .unwrap_or_else(|e| panic!("Não foi possível usar {host}:{port}: {e}"));
+    println!("Concord rodando em http://{host}:{port}");
 
     tokio::select! {
         result = axum::serve(listener, app).into_future() => {
