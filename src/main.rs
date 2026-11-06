@@ -27,7 +27,10 @@ fn env_path(var: &str, default: &str) -> PathBuf {
 
 #[tokio::main]
 async fn main() {
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
     let db_path = env_path("CONCORD_DB", "concord.db");
     // Formato antigo: importado uma única vez, se o banco estiver vazio.
     let legacy_path = env_path("CONCORD_DATA", "concord-data.json");
@@ -50,7 +53,10 @@ async fn main() {
             return;
         }
         Some("bench") => {
-            let n = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+            let n = args
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1_000_000);
             bench::run(n);
             return;
         }
@@ -70,12 +76,20 @@ async fn main() {
              ficará sem moderação. Seu id está em \"Baixar meus dados\" → id_pseudonimo."
         );
     } else {
-        println!("{} administrador(es) da instância configurado(s)", config.admins.len());
+        println!(
+            "{} administrador(es) da instância configurado(s)",
+            config.admins.len()
+        );
     }
     let policy_page: &'static str = Box::leak(render_policy(&config).into_boxed_str());
 
     let livekit = voice::LiveKit::start();
-    let _ = CSP.set(build_csp(livekit.as_ref().map(|l| l.csp_sources()).unwrap_or_default()));
+    let _ = CSP.set(build_csp(
+        livekit
+            .as_ref()
+            .map(|l| l.csp_sources())
+            .unwrap_or_default(),
+    ));
 
     let state = match AppState::open_with_voice(&db_path, &legacy_path, config, livekit) {
         Ok(s) => Arc::new(s),
@@ -100,11 +114,23 @@ async fn main() {
 
     // O cliente web vai embutido no binário.
     let app = Router::new()
-        .route("/", get(|| async { Html(include_str!("../static/index.html")) }))
+        .route(
+            "/",
+            get(|| async { Html(include_str!("../static/index.html")) }),
+        )
         // O código é lido pelo cliente; o servidor só entrega a mesma página.
-        .route("/convite/:code", get(|| async { Html(include_str!("../static/index.html")) }))
-        .route("/privacidade", get(move || async move { Html(policy_page) }))
-        .route("/style.css", get(|| async { asset("text/css", include_str!("../static/style.css")) }))
+        .route(
+            "/convite/:code",
+            get(|| async { Html(include_str!("../static/index.html")) }),
+        )
+        .route(
+            "/privacidade",
+            get(move || async move { Html(policy_page) }),
+        )
+        .route(
+            "/style.css",
+            get(|| async { asset("text/css", include_str!("../static/style.css")) }),
+        )
         .route(
             "/app.js",
             get(|| async { asset("application/javascript", include_str!("../static/app.js")) }),
@@ -116,7 +142,10 @@ async fn main() {
         .route(
             "/vendor/livekit-client.umd.js",
             get(|| async {
-                asset("application/javascript", include_str!("../static/vendor/livekit-client.umd.js"))
+                asset(
+                    "application/javascript",
+                    include_str!("../static/vendor/livekit-client.umd.js"),
+                )
             }),
         )
         .route("/ws", get(ws::ws_handler))
@@ -167,11 +196,19 @@ async fn security_headers(req: Request, next: Next) -> Response {
     let h = res.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        CSP.get().cloned().unwrap_or_else(|| build_csp(String::new())),
+        CSP.get()
+            .cloned()
+            .unwrap_or_else(|| build_csp(String::new())),
     );
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     h.insert(
         "permissions-policy",
         // Microfone, câmera e tela só para o próprio Concord (canais de voz); o resto, bloqueado.
@@ -180,7 +217,10 @@ async fn security_headers(req: Request, next: Next) -> Response {
              geolocation=(), interest-cohort=()",
         ),
     );
-    h.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
+    h.insert(
+        "cross-origin-opener-policy",
+        HeaderValue::from_static("same-origin"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     res
 }

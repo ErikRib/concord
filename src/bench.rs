@@ -36,9 +36,15 @@ pub fn run(n: usize) {
     println!("Teste de carga: {n} mensagens, {CHANNELS} canais, {USERS} pessoas\n");
 
     // Dados de base.
-    let channels: Vec<Channel> = (0..CHANNELS).map(|i| Channel::new(&format!("canal-{i}"), ChannelKind::Text)).collect();
+    let channels: Vec<Channel> = (0..CHANNELS)
+        .map(|i| Channel::new(&format!("canal-{i}"), ChannelKind::Text))
+        .collect();
     let users: Vec<User> = (0..USERS)
-        .map(|i| User { id: Uuid::new_v4(), name: format!("Pessoa {i}"), color: "#5865f2".into() })
+        .map(|i| User {
+            id: Uuid::new_v4(),
+            name: format!("Pessoa {i}"),
+            color: "#5865f2".into(),
+        })
         .collect();
     {
         let mut c = db.writer.lock().unwrap();
@@ -56,7 +62,13 @@ pub fn run(n: usize) {
         };
         db::insert_server(&tx, &server, now_ms()).unwrap();
         for u in &users {
-            let rec = UserRecord { name: u.name.clone(), color: u.color.clone(), consent_version: 2, consented_at: 0, last_seen: now_ms() };
+            let rec = UserRecord {
+                name: u.name.clone(),
+                color: u.color.clone(),
+                consent_version: 2,
+                consented_at: 0,
+                last_seen: now_ms(),
+            };
             db::upsert_user(&tx, u.id, &rec).unwrap();
         }
         tx.commit().unwrap();
@@ -85,14 +97,20 @@ pub fn run(n: usize) {
         tx.commit().unwrap();
     }
     let bulk = t.elapsed();
-    println!("Importação em massa ({n} msgs) ........ {} | {}", fmt_time(bulk), fmt_rate(n, bulk));
+    println!(
+        "Importação em massa ({n} msgs) ........ {} | {}",
+        fmt_time(bulk),
+        fmt_rate(n, bulk)
+    );
 
     // 2) Chat ao vivo: uma transação por mensagem, como no uso real.
     let live = 20_000;
     let t = Instant::now();
     for k in 0..live {
         let mut c = db.writer.lock().unwrap();
-        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
         let m = Message {
             id: Uuid::now_v7(),
             channel_id: channels[k % CHANNELS].id,
@@ -104,29 +122,48 @@ pub fn run(n: usize) {
         tx.commit().unwrap();
     }
     let d = t.elapsed();
-    println!("Chat ao vivo (1 transação/msg) ........ {} | {}", fmt_time(d), fmt_rate(live, d));
+    println!(
+        "Chat ao vivo (1 transação/msg) ........ {} | {}",
+        fmt_time(d),
+        fmt_rate(live, d)
+    );
 
     // 3) Abrir um canal: página mais recente.
     let reps = 2000;
     let t = Instant::now();
     for k in 0..reps {
-        let page = db.read(|c| db::history(c, channels[k % CHANNELS].id, None, 50)).unwrap();
+        let page = db
+            .read(|c| db::history(c, channels[k % CHANNELS].id, None, 50))
+            .unwrap();
         assert_eq!(page.len(), 50);
     }
-    println!("Abrir canal (50 msgs mais recentes) ... {} por consulta", fmt_time(t.elapsed() / reps as u32));
+    println!(
+        "Abrir canal (50 msgs mais recentes) ... {} por consulta",
+        fmt_time(t.elapsed() / reps as u32)
+    );
 
     // 4) Rolar para o passado: página a partir do meio e do começo do canal.
     let ch = channels[0].id;
     let ids: Vec<Uuid> = db
-        .read(|c| c.prepare("SELECT id FROM messages WHERE channel_id = ?1 ORDER BY id")?.query_map([ch], |r| r.get(0))?.collect())
+        .read(|c| {
+            c.prepare("SELECT id FROM messages WHERE channel_id = ?1 ORDER BY id")?
+                .query_map([ch], |r| r.get(0))?
+                .collect()
+        })
         .unwrap();
-    for (label, idx) in [("meio do histórico", ids.len() / 2), ("início do histórico", 60.min(ids.len() - 1))] {
+    for (label, idx) in [
+        ("meio do histórico", ids.len() / 2),
+        ("início do histórico", 60.min(ids.len() - 1)),
+    ] {
         let before = ids[idx];
         let t = Instant::now();
         for _ in 0..reps {
             db.read(|c| db::history(c, ch, Some(before), 50)).unwrap();
         }
-        println!("Rolar até o {label:<20} {} por consulta", fmt_time(t.elapsed() / reps as u32));
+        println!(
+            "Rolar até o {label:<20} {} por consulta",
+            fmt_time(t.elapsed() / reps as u32)
+        );
     }
 
     // 5) Direitos do titular.
@@ -146,7 +183,10 @@ pub fn run(n: usize) {
         tx.commit().unwrap();
         r
     };
-    println!("Apagar dados de 1 titular ({removed} msgs) ... {}", fmt_time(t.elapsed()));
+    println!(
+        "Apagar dados de 1 titular ({removed} msgs) ... {}",
+        fmt_time(t.elapsed())
+    );
 
     // 6) Retenção de 180 dias: ~40% das mensagens vencem, apagadas em lotes de 5 mil.
     let cutoff = now_ms() - 180 * DAY_MS;
@@ -161,10 +201,16 @@ pub fn run(n: usize) {
         }
     }
     let d = t.elapsed();
-    println!("Retenção ({purged} msgs vencidas) ...... {} | {}", fmt_time(d), fmt_rate(purged, d));
+    println!(
+        "Retenção ({purged} msgs vencidas) ...... {} | {}",
+        fmt_time(d),
+        fmt_rate(purged, d)
+    );
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-        + std::fs::metadata(path.with_extension("db-wal")).map(|m| m.len()).unwrap_or(0);
+        + std::fs::metadata(path.with_extension("db-wal"))
+            .map(|m| m.len())
+            .unwrap_or(0);
     println!("\nTamanho do banco: {:.1} MB", size as f64 / 1_048_576.0);
 
     drop(db);

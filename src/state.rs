@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::db::{self, Cache, Db, UserRecord};
 use crate::model::{
-    new_invite_code, Audience, BanView, Channel, ChannelKind, Event, ModLogEntry, ReportView, Server,
-    ServerMsg, ServerView, User, VoiceStateView,
+    new_invite_code, Audience, BanView, Channel, ChannelKind, Event, ModLogEntry, ReportView,
+    Server, ServerMsg, ServerView, User, VoiceStateView,
 };
 use crate::voice::LiveKit;
 
@@ -150,7 +150,10 @@ impl Cache {
     }
 
     pub fn user_name(&self, uid: Uuid) -> String {
-        self.users.get(&uid).map(|u| u.name.clone()).unwrap_or_else(|| "Desconhecido".into())
+        self.users
+            .get(&uid)
+            .map(|u| u.name.clone())
+            .unwrap_or_else(|| "Desconhecido".into())
     }
 
     pub fn server_view(&self, s: &Server, uid: Uuid, admin: bool) -> ServerView {
@@ -170,7 +173,11 @@ impl Cache {
                     .into_iter()
                     .filter_map(|id| {
                         let u = self.users.get(id)?;
-                        Some(User { id: *id, name: u.name.clone(), color: u.color.clone() })
+                        Some(User {
+                            id: *id,
+                            name: u.name.clone(),
+                            color: u.color.clone(),
+                        })
                     })
                     .collect()
             }),
@@ -194,10 +201,24 @@ impl Cache {
 }
 
 /// Registro de moderação (responsabilização, LGPD art. 6º, X). Sem conteúdo de mensagens.
-pub fn log(tx: &Transaction, server_id: Uuid, actor: Option<Uuid>, action: &str, target: Option<Uuid>, detail: &str) -> Res<()> {
+pub fn log(
+    tx: &Transaction,
+    server_id: Uuid,
+    actor: Option<Uuid>,
+    action: &str,
+    target: Option<Uuid>,
+    detail: &str,
+) -> Res<()> {
     db::log(
         tx,
-        &ModLogEntry { at: now_ms(), server_id, actor, action: action.into(), target, detail: detail.into() },
+        &ModLogEntry {
+            at: now_ms(),
+            server_id,
+            actor,
+            action: action.into(),
+            target,
+            detail: detail.into(),
+        },
     )?;
     Ok(())
 }
@@ -221,6 +242,26 @@ pub struct AppState {
     pub voice: Option<LiveKit>,
     /// Sessões de voz por pessoa (id pseudônimo).
     pub voice_sessions: Mutex<HashMap<Uuid, VoiceSession>>,
+    /// Silenciados/ensurdecidos pela moderação: (servidor, pessoa) -> (mudo, surdo).
+    /// Só em memória; vale até um moderador desfazer ou o Concord reiniciar.
+    pub server_mutes: Mutex<HashMap<(Uuid, Uuid), (bool, bool)>>,
+}
+
+/// Executa uma chamada ao LiveKit em segundo plano (não trava o chat).
+fn spawn_lk<F>(fut: F)
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => {
+            h.spawn(async move {
+                if let Err(e) = fut.await {
+                    eprintln!("Voz: falha ao aplicar moderação no LiveKit: {e}");
+                }
+            });
+        }
+        Err(_) => eprintln!("Voz: sem runtime para falar com o LiveKit"),
+    }
 }
 
 impl AppState {
@@ -231,8 +272,14 @@ impl AppState {
     }
 
     /// Abre o banco, migra o esquema e, se for a primeira vez, importa o JSON antigo.
-    pub fn open_with_voice(db_path: &Path, legacy_json: &Path, config: Config, voice: Option<LiveKit>) -> Result<Self, String> {
-        let db = Db::open(db_path).map_err(|e| format!("Erro ao abrir {}: {e}", db_path.display()))?;
+    pub fn open_with_voice(
+        db_path: &Path,
+        legacy_json: &Path,
+        config: Config,
+        voice: Option<LiveKit>,
+    ) -> Result<Self, String> {
+        let db =
+            Db::open(db_path).map_err(|e| format!("Erro ao abrir {}: {e}", db_path.display()))?;
         {
             let conn = db.writer.lock().unwrap();
             if db::is_empty(&conn).map_err(|e| e.to_string())? {
@@ -257,25 +304,60 @@ impl AppState {
             tx,
             voice,
             voice_sessions: Mutex::new(HashMap::new()),
+            server_mutes: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub fn server_mute_of(&self, sid: Uuid, uid: Uuid) -> (bool, bool) {
+        self.server_mutes
+            .lock()
+            .unwrap()
+            .get(&(sid, uid))
+            .copied()
+            .unwrap_or((false, false))
+    }
+
+    /// Remove a pessoa da sala no LiveKit (aplicação no servidor de mídia).
+    pub fn lk_remove(&self, room: Uuid, identity: Uuid) {
+        if let Some(lk) = &self.voice {
+            let admin = lk.admin();
+            spawn_lk(async move { admin.remove(room, identity).await });
+        }
+    }
+
+    /// Libera ou retira a permissão de falar no LiveKit.
+    pub fn lk_set_can_speak(&self, room: Uuid, identity: Uuid, can_speak: bool) {
+        if let Some(lk) = &self.voice {
+            let admin = lk.admin();
+            spawn_lk(async move { admin.set_can_speak(room, identity, can_speak).await });
+        }
     }
 
     // ---------- voz ----------
 
     pub fn voice_states(&self, sid: Uuid) -> Vec<VoiceStateView> {
+        let mutes = self.server_mutes.lock().unwrap().clone();
         let mut states: Vec<VoiceStateView> = self
             .voice_sessions
             .lock()
             .unwrap()
             .values()
             .filter(|v| v.server_id == sid)
-            .map(|v| VoiceStateView {
-                channel_id: v.channel_id,
-                user: v.user.clone(),
-                muted: v.muted,
-                deafened: v.deafened,
-                streaming: v.streaming,
-                camera: v.camera,
+            .map(|v| {
+                let (server_muted, server_deafened) = mutes
+                    .get(&(sid, v.user.id))
+                    .copied()
+                    .unwrap_or((false, false));
+                VoiceStateView {
+                    channel_id: v.channel_id,
+                    user: v.user.clone(),
+                    muted: v.muted,
+                    deafened: v.deafened,
+                    streaming: v.streaming,
+                    camera: v.camera,
+                    server_muted,
+                    server_deafened,
+                }
             })
             .collect();
         states.sort_by_key(|s| s.user.name.to_lowercase());
@@ -285,32 +367,68 @@ impl AppState {
     /// Avisa quem vê o servidor sobre quem está em cada canal de voz.
     pub fn emit_voice(&self, sid: Uuid) {
         let states = self.voice_states(sid);
-        self.emit(Event::Send(Audience::Server(sid), ServerMsg::VoiceStates { server_id: sid, states }));
+        self.emit(Event::Send(
+            Audience::Server(sid),
+            ServerMsg::VoiceStates {
+                server_id: sid,
+                states,
+            },
+        ));
     }
 
     /// Tira a pessoa do canal de voz. Com `conn_id`, só se a sessão for daquela
-    /// conexão (outra aba pode ter assumido). Se o canal esvaziar, o status some.
-    pub fn leave_voice(&self, user_id: Uuid, conn_id: Option<Uuid>) {
+    /// conexão (outra aba pode ter assumido); com `channel_id`, só se ainda estiver
+    /// nesse canal (ela pode ter sido movida). Se o canal esvaziar, o status some.
+    pub fn leave_voice(
+        &self,
+        user_id: Uuid,
+        conn_id: Option<Uuid>,
+        channel_id: Option<Uuid>,
+    ) -> Option<VoiceSession> {
         let left = {
             let mut sessions = self.voice_sessions.lock().unwrap();
             match sessions.get(&user_id) {
-                Some(s) if conn_id.is_none_or(|c| c == s.conn_id) => sessions.remove(&user_id),
+                Some(s)
+                    if conn_id.is_none_or(|c| c == s.conn_id)
+                        && channel_id.is_none_or(|c| c == s.channel_id) =>
+                {
+                    sessions.remove(&user_id)
+                }
                 _ => None,
             }
         };
-        let Some(session) = left else { return };
-        let empty = !self.voice_sessions.lock().unwrap().values().any(|v| v.channel_id == session.channel_id);
-        if empty {
-            self.clear_voice_status(session.channel_id);
-        }
+        let session = left?;
+        self.after_channel_left(session.channel_id);
         self.emit_voice(session.server_id);
+        Some(session)
+    }
+
+    /// Se o canal esvaziou, o status some (minimização).
+    pub fn after_channel_left(&self, channel_id: Uuid) {
+        let empty = !self
+            .voice_sessions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|v| v.channel_id == channel_id);
+        if empty {
+            self.clear_voice_status(channel_id);
+        }
     }
 
     /// Minimização: o status existe só enquanto há gente no canal.
     pub fn clear_voice_status(&self, channel_id: Uuid) {
         let result = self.mutate(|cache, tx| {
-            let Some(i) = cache.server_index_of_channel(channel_id) else { return Ok(None) };
-            let Some(ch) = cache.servers[i].channels.iter_mut().find(|c| c.id == channel_id) else { return Ok(None) };
+            let Some(i) = cache.server_index_of_channel(channel_id) else {
+                return Ok(None);
+            };
+            let Some(ch) = cache.servers[i]
+                .channels
+                .iter_mut()
+                .find(|c| c.id == channel_id)
+            else {
+                return Ok(None);
+            };
             if ch.status.is_none() {
                 return Ok(None);
             }
@@ -331,11 +449,24 @@ impl AppState {
     /// Encerra as sessões de voz de quem não pode mais estar no canal
     /// (canal ou servidor apagado, banimento, saída de servidor privado).
     pub fn kick_voice_where(&self, should_kick: impl Fn(&VoiceSession) -> bool, reason: &str) {
-        let kicked: Vec<VoiceSession> =
-            self.voice_sessions.lock().unwrap().values().filter(|s| should_kick(s)).cloned().collect();
+        let kicked: Vec<VoiceSession> = self
+            .voice_sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| should_kick(s))
+            .cloned()
+            .collect();
         for s in kicked {
-            self.emit(Event::Send(Audience::User(s.user.id), ServerMsg::VoiceEnded { reason: reason.into() }));
-            self.leave_voice(s.user.id, None);
+            self.emit(Event::Send(
+                Audience::User(s.user.id),
+                ServerMsg::VoiceEnded {
+                    reason: reason.into(),
+                },
+            ));
+            self.leave_voice(s.user.id, None, None);
+            // Não depende do navegador obedecer: o LiveKit tira a pessoa da sala.
+            self.lk_remove(s.channel_id, s.user.id);
         }
     }
 
@@ -398,9 +529,12 @@ impl AppState {
         match aud {
             Audience::All => true,
             Audience::User(id) => *id == uid,
-            Audience::Server(sid) => {
-                self.cache.lock().unwrap().server(*sid).is_some_and(|s| s.can_view(uid))
-            }
+            Audience::Server(sid) => self
+                .cache
+                .lock()
+                .unwrap()
+                .server(*sid)
+                .is_some_and(|s| s.can_view(uid)),
         }
     }
 
@@ -424,7 +558,11 @@ impl AppState {
 
     pub fn can_moderate(&self, sid: Uuid, uid: Uuid) -> bool {
         let admin = self.is_admin(uid);
-        self.cache.lock().unwrap().server(sid).is_some_and(|s| s.can_moderate(uid, admin))
+        self.cache
+            .lock()
+            .unwrap()
+            .server(sid)
+            .is_some_and(|s| s.can_moderate(uid, admin))
     }
 
     pub fn reports_for(&self, sid: Uuid, uid: Uuid) -> Option<Vec<ReportView>> {
@@ -448,7 +586,9 @@ impl AppState {
         self.mutate(|cache, tx| {
             let now = now_ms();
             let old = cache.users.get(&user.id).cloned();
-            let changed = old.as_ref().is_some_and(|o| o.name != user.name || o.color != user.color);
+            let changed = old
+                .as_ref()
+                .is_some_and(|o| o.name != user.name || o.color != user.color);
             let rec = UserRecord {
                 name: user.name.clone(),
                 color: user.color.clone(),
@@ -469,9 +609,16 @@ impl AppState {
     /// do titular, então todas ficam corretas automaticamente (art. 6º, V).
     pub fn update_profile(&self, user: &User) -> Res<bool> {
         self.mutate(|cache, tx| {
-            let Some(old) = cache.users.get(&user.id).cloned() else { return Ok(false) };
+            let Some(old) = cache.users.get(&user.id).cloned() else {
+                return Ok(false);
+            };
             let changed = old.name != user.name || old.color != user.color;
-            let rec = UserRecord { name: user.name.clone(), color: user.color.clone(), last_seen: now_ms(), ..old };
+            let rec = UserRecord {
+                name: user.name.clone(),
+                color: user.color.clone(),
+                last_seen: now_ms(),
+                ..old
+            };
             db::upsert_user(tx, user.id, &rec)?;
             cache.users.insert(user.id, rec);
             Ok(changed)
@@ -498,7 +645,12 @@ impl AppState {
         let uid = user.id;
         let rows = self.read(|c| db::export_rows(c, uid))?;
         let cache = self.cache.lock().unwrap();
-        let server_name = |sid: Uuid| cache.server(sid).map(|s| s.name.clone()).unwrap_or_else(|| "(apagado)".into());
+        let server_name = |sid: Uuid| {
+            cache
+                .server(sid)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "(apagado)".into())
+        };
 
         let mensagens: Vec<_> = rows
             .messages
@@ -516,18 +668,25 @@ impl AppState {
         let denuncias: Vec<_> = rows
             .reports
             .iter()
-            .map(|r| json!({
-                "servidor": server_name(r.server_id),
-                "mensagem_id": r.message_id,
-                "categoria": r.category,
-                "detalhes": r.details,
-                "feita_em": iso_utc(r.created_at),
-            }))
+            .map(|r| {
+                json!({
+                    "servidor": server_name(r.server_id),
+                    "mensagem_id": r.message_id,
+                    "categoria": r.category,
+                    "detalhes": r.details,
+                    "feita_em": iso_utc(r.created_at),
+                })
+            })
             .collect();
         let banimentos: Vec<_> = cache
             .servers
             .iter()
-            .flat_map(|s| s.bans.iter().filter(|b| b.user_id == uid).map(move |b| (s, b)))
+            .flat_map(|s| {
+                s.bans
+                    .iter()
+                    .filter(|b| b.user_id == uid)
+                    .map(move |b| (s, b))
+            })
             .map(|(s, b)| json!({ "servidor": s.name, "motivo": b.reason, "em": iso_utc(b.at) }))
             .collect();
         let moderacao: Vec<_> = rows
@@ -581,12 +740,21 @@ impl AppState {
     /// banimentos e o registro do titular, anonimiza o registro de moderação e
     /// passa os servidores dele adiante. Tudo numa única transação.
     pub fn delete_user_data(&self, uid: Uuid) -> Res<Deletion> {
+        self.server_mutes
+            .lock()
+            .unwrap()
+            .retain(|(_, u), _| *u != uid);
         self.mutate(|cache, tx| {
             // Servidores do titular: primeiro moderador, senão o membro mais antigo.
             let mut transfers = vec![];
             for s in &cache.servers {
                 if s.owner_id == Some(uid) {
-                    let heir = s.moderators.iter().chain(s.members.iter()).find(|&&m| m != uid).copied();
+                    let heir = s
+                        .moderators
+                        .iter()
+                        .chain(s.members.iter())
+                        .find(|&&m| m != uid)
+                        .copied();
                     transfers.push((s.id, heir));
                 }
             }
@@ -605,7 +773,12 @@ impl AppState {
             // Banco confirmado: agora o cache.
             let mut servers_changed = vec![];
             for s in cache.servers.iter_mut() {
-                let before = (s.owner_id, s.members.len(), s.moderators.len(), s.bans.len());
+                let before = (
+                    s.owner_id,
+                    s.members.len(),
+                    s.moderators.len(),
+                    s.bans.len(),
+                );
                 if let Some(&(_, heir)) = transfers.iter().find(|(sid, _)| *sid == s.id) {
                     s.owner_id = heir;
                     if let Some(h) = heir {
@@ -621,12 +794,23 @@ impl AppState {
                     c.status_by = None;
                     status_cleared = true;
                 }
-                if status_cleared || before != (s.owner_id, s.members.len(), s.moderators.len(), s.bans.len()) {
+                if status_cleared
+                    || before
+                        != (
+                            s.owner_id,
+                            s.members.len(),
+                            s.moderators.len(),
+                            s.bans.len(),
+                        )
+                {
                     servers_changed.push(s.id);
                 }
             }
             cache.users.remove(&uid);
-            Ok(Deletion { messages_removed, servers_changed })
+            Ok(Deletion {
+                messages_removed,
+                servers_changed,
+            })
         })
     }
 
@@ -655,8 +839,10 @@ impl AppState {
         let online: HashSet<Uuid> = self.online.lock().unwrap().values().map(|u| u.id).collect();
         let result = self.mutate(|cache, tx| {
             let counts = db::purge_small_tables(tx, cutoff)?;
-            let inactive: Vec<Uuid> =
-                db::inactive_users(tx, cutoff)?.into_iter().filter(|id| !online.contains(id)).collect();
+            let inactive: Vec<Uuid> = db::inactive_users(tx, cutoff)?
+                .into_iter()
+                .filter(|id| !online.contains(id))
+                .collect();
             for id in &inactive {
                 db::delete_user_record(tx, *id)?;
             }
@@ -713,13 +899,22 @@ pub mod tests {
     pub fn temp_state(name: &str) -> (AppState, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("concord-test-{name}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let config = Config { retention_days: 30, controller: String::new(), contact: String::new(), admins: HashSet::new() };
+        let config = Config {
+            retention_days: 30,
+            controller: String::new(),
+            contact: String::new(),
+            admins: HashSet::new(),
+        };
         let st = AppState::open(&dir.join("t.db"), &dir.join("nao-existe.json"), config).unwrap();
         (st, dir)
     }
 
     fn user(name: &str) -> User {
-        User { id: Uuid::new_v4(), name: name.into(), color: "#000000".into() }
+        User {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            color: "#000000".into(),
+        }
     }
 
     #[test]
@@ -735,13 +930,26 @@ pub mod tests {
         let u = user("Antigo");
         st.register_user(&u, 2).unwrap();
         let ch = st.cache.lock().unwrap().servers[0].channels[0].id;
-        let msg = Message { id: Uuid::now_v7(), channel_id: ch, author: u.clone(), content: "oi".into(), timestamp: now_ms() };
-        st.mutate(|_, tx| Ok(db::insert_message(tx, &msg)?)).unwrap();
-        let novo = User { name: "Novo".into(), ..u };
+        let msg = Message {
+            id: Uuid::now_v7(),
+            channel_id: ch,
+            author: u.clone(),
+            content: "oi".into(),
+            timestamp: now_ms(),
+        };
+        st.mutate(|_, tx| Ok(db::insert_message(tx, &msg)?))
+            .unwrap();
+        let novo = User {
+            name: "Novo".into(),
+            ..u
+        };
         assert!(st.update_profile(&novo).unwrap());
         let hist = st.read(|c| db::history(c, ch, None, 10)).unwrap();
         assert_eq!(hist[0].author.name, "Novo");
-        assert!(!st.update_profile(&novo).unwrap(), "sem mudança não deve sinalizar");
+        assert!(
+            !st.update_profile(&novo).unwrap(),
+            "sem mudança não deve sinalizar"
+        );
         drop(st);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -753,12 +961,22 @@ pub mod tests {
         // A alteração muda o cache e depois o banco falha (canal inexistente na FK).
         let r: Res<()> = st.mutate(|cache, tx| {
             cache.servers.clear();
-            let bad = Message { id: Uuid::now_v7(), channel_id: Uuid::new_v4(), author: user("x"), content: "x".into(), timestamp: 0 };
+            let bad = Message {
+                id: Uuid::now_v7(),
+                channel_id: Uuid::new_v4(),
+                author: user("x"),
+                content: "x".into(),
+                timestamp: 0,
+            };
             db::insert_message(tx, &bad)?;
             Ok(())
         });
         assert!(matches!(r, Err(Fail::Internal(_))));
-        assert_eq!(st.cache.lock().unwrap().servers.len(), before, "cache recarregado do banco");
+        assert_eq!(
+            st.cache.lock().unwrap().servers.len(),
+            before,
+            "cache recarregado do banco"
+        );
         drop(st);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -774,7 +992,12 @@ pub mod tests {
 
     #[test]
     fn permissoes_de_servidor_privado() {
-        let (dono, membro, mod_, estranho) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let (dono, membro, mod_, estranho) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
         let mut s = Server {
             id: Uuid::new_v4(),
             name: "x".into(),
@@ -790,7 +1013,11 @@ pub mod tests {
         assert!(s.can_moderate(mod_, false) && !s.can_moderate(membro, false));
         assert!(s.can_manage(dono, false) && !s.can_manage(mod_, false));
         assert!(!s.can_moderate(estranho, true));
-        s.bans.push(crate::model::Ban { user_id: membro, reason: "x".into(), at: 0 });
+        s.bans.push(crate::model::Ban {
+            user_id: membro,
+            reason: "x".into(),
+            at: 0,
+        });
         assert!(!s.can_view(membro));
         assert_eq!(new_invite_code().len(), 12);
     }

@@ -214,8 +214,14 @@ pub struct Message {
     pub timestamp: i64,
 }
 
-pub const REPORT_CATEGORIES: &[&str] =
-    &["spam", "assedio", "odio", "dados_pessoais", "ilegal", "outro"];
+pub const REPORT_CATEGORIES: &[&str] = &[
+    "spam",
+    "assedio",
+    "odio",
+    "dados_pessoais",
+    "ilegal",
+    "outro",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Report {
@@ -262,17 +268,34 @@ pub enum ClientMsg {
     /// Primeira mensagem da conexão. `consent_version` é a versão da
     /// política de privacidade que o titular aceitou.
     /// Enviada de novo durante a conexão só para trocar apelido/cor.
-    Hello { secret: String, name: String, color: String, consent_version: u32 },
+    Hello {
+        secret: String,
+        name: String,
+        color: String,
+        consent_version: u32,
+    },
     CreateServer {
         name: String,
         #[serde(default)]
         public: bool,
     },
-    UpdateServer { server_id: Uuid, name: Option<String>, public: Option<bool> },
-    DeleteServer { server_id: Uuid },
-    RegenerateInvite { server_id: Uuid },
-    JoinServer { code: String },
-    LeaveServer { server_id: Uuid },
+    UpdateServer {
+        server_id: Uuid,
+        name: Option<String>,
+        public: Option<bool>,
+    },
+    DeleteServer {
+        server_id: Uuid,
+    },
+    RegenerateInvite {
+        server_id: Uuid,
+    },
+    JoinServer {
+        code: String,
+    },
+    LeaveServer {
+        server_id: Uuid,
+    },
     CreateChannel {
         server_id: Uuid,
         name: String,
@@ -286,15 +309,46 @@ pub enum ClientMsg {
         bitrate: Option<u32>,
         video_quality: Option<String>,
     },
-    DeleteChannel { channel_id: Uuid },
+    DeleteChannel {
+        channel_id: Uuid,
+    },
     /// Pede para entrar num canal de voz (o servidor devolve um token do LiveKit).
-    VoiceJoin { channel_id: Uuid },
-    VoiceLeave,
+    VoiceJoin {
+        channel_id: Uuid,
+    },
+    /// `channel_id`: só sai se ainda estiver nesse canal (evita corrida ao ser movido).
+    VoiceLeave {
+        #[serde(default)]
+        channel_id: Option<Uuid>,
+    },
+    /// Moderação de voz: "mute", "unmute", "deafen", "undeafen" ou "disconnect".
+    VoiceModerate {
+        server_id: Uuid,
+        user_id: Uuid,
+        action: String,
+    },
+    /// Moderação de voz: move alguém para outro canal de voz do mesmo servidor.
+    VoiceMove {
+        user_id: Uuid,
+        channel_id: Uuid,
+    },
     /// Estado visível para os outros na barra lateral.
-    VoiceUpdate { muted: bool, deafened: bool, streaming: bool, camera: bool },
+    VoiceUpdate {
+        muted: bool,
+        deafened: bool,
+        streaming: bool,
+        camera: bool,
+    },
     /// Status do canal de voz; texto vazio limpa.
-    SetVoiceStatus { channel_id: Uuid, status: String },
-    SetModerator { server_id: Uuid, user_id: Uuid, enabled: bool },
+    SetVoiceStatus {
+        channel_id: Uuid,
+        status: String,
+    },
+    SetModerator {
+        server_id: Uuid,
+        user_id: Uuid,
+        enabled: bool,
+    },
     BanUser {
         server_id: Uuid,
         user_id: Uuid,
@@ -302,16 +356,27 @@ pub enum ClientMsg {
         #[serde(default)]
         delete_messages: bool,
     },
-    UnbanUser { server_id: Uuid, user_id: Uuid },
-    SendMessage { channel_id: Uuid, content: String },
+    UnbanUser {
+        server_id: Uuid,
+        user_id: Uuid,
+    },
+    SendMessage {
+        channel_id: Uuid,
+        content: String,
+    },
     /// Sem `before`: a página mais recente. Com `before`: mensagens anteriores a ela.
     FetchHistory {
         channel_id: Uuid,
         #[serde(default)]
         before: Option<Uuid>,
     },
-    Typing { channel_id: Uuid },
-    DeleteMessage { channel_id: Uuid, message_id: Uuid },
+    Typing {
+        channel_id: Uuid,
+    },
+    DeleteMessage {
+        channel_id: Uuid,
+        message_id: Uuid,
+    },
     ReportMessage {
         channel_id: Uuid,
         message_id: Uuid,
@@ -319,8 +384,13 @@ pub enum ClientMsg {
         #[serde(default)]
         details: String,
     },
-    FetchReports { server_id: Uuid },
-    ResolveReport { report_id: Uuid, delete_message: bool },
+    FetchReports {
+        server_id: Uuid,
+    },
+    ResolveReport {
+        report_id: Uuid,
+        delete_message: bool,
+    },
     /// LGPD art. 18, II e V: acesso e portabilidade.
     ExportMyData,
     /// LGPD art. 18, VI e IX: eliminação e revogação do consentimento.
@@ -331,45 +401,104 @@ pub enum ClientMsg {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Ready { me: User, servers: Vec<ServerView>, online: Vec<User>, is_admin: bool, voice_enabled: bool },
+    Ready {
+        me: User,
+        servers: Vec<ServerView>,
+        online: Vec<User>,
+        is_admin: bool,
+        voice_enabled: bool,
+    },
     /// O titular ainda não aceitou a versão atual da política.
-    ConsentRequired { version: u32, retention_days: u32 },
+    ConsentRequired {
+        version: u32,
+        retention_days: u32,
+    },
     /// Servidor novo ou alterado, já filtrado para quem recebe.
-    ServerUpdated { server: ServerView },
+    ServerUpdated {
+        server: ServerView,
+    },
     /// O servidor sumiu para quem recebe (apagado, banido, saiu, ficou privado).
-    ServerRemoved { server_id: Uuid },
+    ServerRemoved {
+        server_id: Uuid,
+    },
     /// Sugestão para o cliente abrir um servidor/canal (após criar ou entrar).
-    Focus { server_id: Uuid, channel_id: Option<Uuid> },
-    Message { message: Message },
-    MessageDeleted { channel_id: Uuid, message_id: Uuid },
+    Focus {
+        server_id: Uuid,
+        channel_id: Option<Uuid>,
+    },
+    Message {
+        message: Message,
+    },
+    MessageDeleted {
+        channel_id: Uuid,
+        message_id: Uuid,
+    },
     /// Mensagens de alguém apagadas num servidor (ex.: banimento).
-    MessagesPurged { server_id: Uuid, user_id: Uuid },
-    History { channel_id: Uuid, messages: Vec<Message>, before: Option<Uuid>, has_more: bool },
-    Presence { online: Vec<User> },
-    Typing { channel_id: Uuid, user: User },
-    Reports { server_id: Uuid, reports: Vec<ReportView> },
-    MyData { data: serde_json::Value },
-    DataDeleted { messages_removed: usize },
+    MessagesPurged {
+        server_id: Uuid,
+        user_id: Uuid,
+    },
+    History {
+        channel_id: Uuid,
+        messages: Vec<Message>,
+        before: Option<Uuid>,
+        has_more: bool,
+    },
+    Presence {
+        online: Vec<User>,
+    },
+    Typing {
+        channel_id: Uuid,
+        user: User,
+    },
+    Reports {
+        server_id: Uuid,
+        reports: Vec<ReportView>,
+    },
+    MyData {
+        data: serde_json::Value,
+    },
+    DataDeleted {
+        messages_removed: usize,
+    },
     /// Um titular apagou seus dados: clientes removem as mensagens dele da tela.
-    UserPurged { user_id: Uuid },
+    UserPurged {
+        user_id: Uuid,
+    },
     /// Um titular mudou apelido/cor: clientes atualizam as mensagens antigas.
-    ProfileUpdated { user: User },
+    ProfileUpdated {
+        user: User,
+    },
     /// Autorização para entrar na sala do LiveKit. `url` nulo: o cliente usa
     /// o LiveKit local na porta 7880 do mesmo host.
     VoiceToken {
         server_id: Uuid,
         channel_id: Uuid,
         url: Option<String>,
+        /// Porta do LiveKit local (usada quando `url` é nulo).
+        port: u16,
         token: String,
         bitrate: u32,
         video_quality: String,
+        /// Enviado porque um moderador moveu a pessoa (só a aba que está na chamada usa).
+        #[serde(default)]
+        moved: bool,
     },
     /// Quem está em cada canal de voz do servidor.
-    VoiceStates { server_id: Uuid, states: Vec<VoiceStateView> },
+    VoiceStates {
+        server_id: Uuid,
+        states: Vec<VoiceStateView>,
+    },
     /// A sessão de voz desta pessoa foi encerrada pelo servidor (ex.: canal apagado).
-    VoiceEnded { reason: String },
-    Info { message: String },
-    Error { message: String },
+    VoiceEnded {
+        reason: String,
+    },
+    Info {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -380,6 +509,9 @@ pub struct VoiceStateView {
     pub deafened: bool,
     pub streaming: bool,
     pub camera: bool,
+    /// Silenciado/ensurdecido por um moderador.
+    pub server_muted: bool,
+    pub server_deafened: bool,
 }
 
 /// Quem deve receber um evento.

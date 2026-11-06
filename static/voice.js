@@ -79,6 +79,8 @@ function micConstraints() {
 }
 
 async function onVoiceToken(m) {
+  // Movido por um moderador: só a aba que está na chamada troca de sala.
+  if (m.moved && !voice.room) return;
   // Reconexão do chat com a chamada ainda ativa: só reafirma o estado.
   if (voice.room && voice.channelId === m.channel_id) {
     voice.connecting = false;
@@ -105,7 +107,7 @@ async function onVoiceToken(m) {
   });
   voice.room = room;
   wireRoom(room);
-  const url = m.url ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.hostname}:7880`;
+  const url = m.url ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.hostname}:${m.port}`;
   try {
     await room.connect(url, m.token, { autoSubscribe: false });
   } catch (e) {
@@ -128,9 +130,9 @@ async function onVoiceToken(m) {
 }
 
 async function voiceLeave() {
-  const wasIn = !!voice.room;
+  const channel = voice.room ? voice.channelId : null;
   await disconnectRoom();
-  if (wasIn) send({ type: "voice_leave" });
+  if (channel) send({ type: "voice_leave", channel_id: channel });
   renderVoiceAll();
 }
 
@@ -148,6 +150,7 @@ function cleanupVoice() {
   voice.speaking.clear();
   voice.watching.clear();
   voice.focus = null;
+  lastServerMute = { muted: false, deafened: false };
   for (const v of voice.videoEls.values()) v.remove();
   voice.videoEls.clear();
   stopStats();
@@ -207,8 +210,10 @@ function wireRoom(room) {
     })
     .on(E.Disconnected, () => {
       if (voice.room !== room) return; // saída pedida por nós
+      const channel = voice.channelId;
       cleanupVoice();
-      send({ type: "voice_leave" });
+      // Com o canal: se fomos movidos nesse meio-tempo, o servidor não nos tira do novo.
+      send({ type: "voice_leave", channel_id: channel });
       toast("Você foi desconectado da voz");
       renderVoiceAll();
     });
@@ -222,29 +227,56 @@ function updateSpeaking() {
   }
 }
 
+// ---------- moderação recebida ----------
+/** Meu estado definido por moderadores neste servidor (silenciado/ensurdecido). */
+function myServerMute() {
+  const s = (state.voiceStates.get(voice.serverId) ?? []).find((x) => x.user.id === state.me?.id);
+  return { muted: !!s?.server_muted, deafened: !!s?.server_deafened };
+}
+
+let lastServerMute = { muted: false, deafened: false };
+/** Chamado a cada atualização de quem está na voz: aplica silêncio/surdez da moderação. */
+function onVoiceStatesChanged() {
+  if (!voice.room) return;
+  const now = myServerMute();
+  if (now.muted !== lastServerMute.muted || now.deafened !== lastServerMute.deafened) {
+    lastServerMute = now;
+    applyMic();
+    voice.room.remoteParticipants.forEach(applyVolume);
+    renderVoiceControls();
+  }
+}
+
 // ---------- microfone, ensurdecer e apertar para falar ----------
 function micShouldBeOn() {
+  const mod = myServerMute();
+  if (mod.muted || mod.deafened) return false; // o LiveKit também bloqueia
   return !voice.muted && !voice.deafened && (vset.mode === "vad" || voice.pttDown);
 }
 
 async function applyMic(first) {
   if (!voice.room) return;
+  const on = micShouldBeOn();
   try {
-    await voice.room.localParticipant.setMicrophoneEnabled(micShouldBeOn(), micConstraints());
+    await voice.room.localParticipant.setMicrophoneEnabled(on, micConstraints());
   } catch (e) {
     console.error(e);
-    if (first) toast("Sem acesso ao microfone. Você entrou só para ouvir.");
-    voice.muted = true;
+    if (first && on) toast("Sem acesso ao microfone. Você entrou só para ouvir.");
+    if (on) voice.muted = true;
   }
 }
 
 function applyVolume(p) {
-  const v = voice.deafened ? 0 : (vset.volumes[p.identity] ?? 1);
+  const v = voice.deafened || myServerMute().deafened ? 0 : (vset.volumes[p.identity] ?? 1);
   p.setVolume(v);
   p.setVolume(v, SRC.ScreenShareAudio);
 }
 
 async function toggleMute() {
+  const mod = myServerMute();
+  if (voice.room && (mod.muted || mod.deafened)) {
+    return toast("Um moderador silenciou você neste servidor");
+  }
   if (voice.deafened) {
     voice.deafened = false;
     voice.muted = false;
@@ -537,6 +569,33 @@ async function channelSettings(server, ch) {
   send(msg);
 }
 
+// ---------- moderação de voz (menu do moderador) ----------
+/** Itens do menu de uma pessoa que está numa chamada deste servidor. */
+function voiceModerationItems(server, user) {
+  if (!server?.can_moderate || user.id === state.me?.id) return [];
+  const s = (state.voiceStates.get(server.id) ?? []).find((x) => x.user.id === user.id);
+  if (!s) return [];
+  const act = (action) => () => send({ type: "voice_moderate", server_id: server.id, user_id: user.id, action });
+  return [
+    "-",
+    { label: s.server_muted ? "Remover silêncio do servidor" : "Silenciar no servidor", onClick: act(s.server_muted ? "unmute" : "mute") },
+    { label: s.server_deafened ? "Reativar áudio (servidor)" : "Ensurdecer no servidor", onClick: act(s.server_deafened ? "undeafen" : "deafen") },
+    { label: "Mover para outro canal…", onClick: () => moveUser(server, s) },
+    { label: "Desconectar da voz", danger: true, onClick: act("disconnect") },
+  ];
+}
+
+async function moveUser(server, s) {
+  const targets = server.channels.filter((c) => c.kind === "voice" && c.id !== s.channel_id);
+  if (targets.length === 0) return toast("Não há outro canal de voz neste servidor");
+  const r = await dialog({
+    title: `Mover ${s.user.name}`,
+    submit: "Mover",
+    fields: [{ name: "channel", type: "select", label: "Para o canal", options: targets.map((c) => [c.id, c.name]) }],
+  });
+  if (r) send({ type: "voice_move", user_id: s.user.id, channel_id: r.channel });
+}
+
 // ---------- desenho ----------
 function renderVoiceAll() {
   renderVoiceControls();
@@ -555,12 +614,15 @@ function renderVoiceControls() {
   $("#vp-camera").classList.toggle("active", !!lp?.isCameraEnabled);
   $("#vp-screen").classList.toggle("active", !!lp?.isScreenShareEnabled);
   $("#vp-screen span").textContent = lp?.isScreenShareEnabled ? "Parar" : "Tela";
+  const mod = room ? myServerMute() : { muted: false, deafened: false };
   const mute = $("#btn-mute");
-  mute.classList.toggle("off", voice.muted || voice.deafened);
-  mute.title = voice.muted ? "Ativar microfone" : "Silenciar microfone";
+  mute.classList.toggle("off", voice.muted || voice.deafened || mod.muted || mod.deafened);
+  mute.classList.toggle("by-mod", mod.muted || mod.deafened);
+  mute.title = mod.muted || mod.deafened ? "Silenciado por um moderador" : voice.muted ? "Ativar microfone" : "Silenciar microfone";
   const deaf = $("#btn-deafen");
-  deaf.classList.toggle("off", voice.deafened);
-  deaf.title = voice.deafened ? "Ativar áudio" : "Desativar áudio";
+  deaf.classList.toggle("off", voice.deafened || mod.deafened);
+  deaf.classList.toggle("by-mod", mod.deafened);
+  deaf.title = mod.deafened ? "Áudio desativado por um moderador" : voice.deafened ? "Ativar áudio" : "Desativar áudio";
 }
 
 function videoFor(track) {

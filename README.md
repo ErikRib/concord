@@ -63,7 +63,51 @@ Na primeira chamada, o Windows pode pedir permissão de rede para o `livekit-ser
 em **redes privadas**. O LiveKit usa TCP 7880 (sinalização) e 7881, e UDP 50000–50100 (mídia).
 
 **Produção:** rode o LiveKit à parte, com HTTPS e TURN, e defina `CONCORD_LIVEKIT_URL` (por exemplo
-`wss://voz.exemplo.com`), `CONCORD_LIVEKIT_KEY` e `CONCORD_LIVEKIT_SECRET`.
+`wss://voz.exemplo.com`), `CONCORD_LIVEKIT_KEY` e `CONCORD_LIVEKIT_SECRET`. Defina também
+`CONCORD_LIVEKIT_API_URL` (`http://` pela rede interna) para que a moderação de voz seja aplicada
+no LiveKit.
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `CONCORD_LIVEKIT_PORT` | `7880` | Porta do LiveKit local (a mídia usa TCP porta+1) |
+| `CONCORD_LIVEKIT_UDP_START` | `50000` | Início da faixa UDP de mídia (100 portas) |
+| `CONCORD_LIVEKIT_PUBLIC_URL` | — | URL `wss://` pela qual os navegadores alcançam o LiveKit local (ex.: Tailscale) |
+| `CONCORD_ORIGENS` | — | Origens extras aceitas no WebSocket, para quando há um proxy na frente |
+
+Se a porta do LiveKit já estiver em uso (por exemplo, outro Concord aberto), a voz é desativada
+com um aviso. Antes, os tokens iriam para o LiveKit errado.
+
+**Moderação de voz** (clique no nome da pessoa):
+- **Silenciar no servidor:** o LiveKit retira a permissão de microfone; nem um cliente modificado consegue falar.
+- **Ensurdecer no servidor:** silencia (aplicado no LiveKit) e corta o áudio no navegador da pessoa.
+- **Mover para outro canal.**
+- **Desconectar da voz:** o LiveKit remove a pessoa da sala.
+
+Banimento, saída de servidor privado e exclusão de canal ou servidor também tiram a pessoa da sala
+no LiveKit. Toda ação entra no registro de moderação.
+
+### Testar em vários dispositivos e redes (Tailscale)
+
+O navegador só libera microfone, câmera e tela em **HTTPS** (ou em `localhost`). O Tailscale cria
+uma rede privada entre os seus aparelhos, dá HTTPS e deixa a mídia UDP passar, sem expor nada na
+internet:
+
+1. Instale o Tailscale nos aparelhos, com a mesma conta. No painel do Tailscale, ative **MagicDNS**
+   e **HTTPS Certificates** (em DNS).
+2. No computador que roda o Concord:
+   ```powershell
+   tailscale serve --bg --https=443 http://localhost:3000
+   tailscale serve --bg --https=8443 http://localhost:7880
+   $env:CONCORD_LIVEKIT_PUBLIC_URL = "wss://SUA-MAQUINA.SEU-TAILNET.ts.net:8443"
+   $env:CONCORD_ORIGENS = "https://SUA-MAQUINA.SEU-TAILNET.ts.net"
+   cargo run --release
+   ```
+3. Nos outros aparelhos, abra `https://SUA-MAQUINA.SEU-TAILNET.ts.net`.
+
+O **Cloudflare Tunnel** serve para o chat, mas não repassa o UDP do WebRTC. Para abrir o Concord
+ao público, use uma VPS (de preferência no Brasil) com o Concord e o LiveKit, ou o Cloudflare
+Tunnel com o LiveKit Cloud. Nesse segundo caso, há transferência internacional de dados (LGPD,
+art. 33), que precisa constar na política.
 
 **Recursos:**
 - Entrar com um clique no canal de voz, com indicador de quem está falando
@@ -156,10 +200,13 @@ cargo run
 
 Depois, em outro terminal, rode `node tests/e2e.mjs`.
 
-Teste de mídia real, com dois navegadores numa chamada via LiveKit (exige o Google Chrome):
+Teste de mídia real, com dois navegadores numa chamada via LiveKit: áudio, transmissão de tela e
+moderação de voz aplicada no LiveKit. Exige o Google Chrome. Inicie o servidor de teste (porta
+3999, banco vazio) com a "Ana" do teste como administradora:
 
 ```powershell
 npm install --prefix tests
+$env:CONCORD_ADMINS = node tests/media.mjs --admin-id   # antes de iniciar o servidor de teste
 node tests/media.mjs              # sem janelas
 $env:HEADED="1"; node tests/media.mjs   # com janelas, para medir a fluidez real usando a GPU
 ```

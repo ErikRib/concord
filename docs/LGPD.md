@@ -25,6 +25,7 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 | Status do canal de voz e quem o definiu | Titular | Informar o que acontece no canal | Consentimento | Banco; quem definiu **não é mostrado** | Apagado quando o canal esvazia |
 | IP na chamada | Conexão de mídia | Entregar áudio e vídeo | Necessário ao serviço | LiveKit, em memória, com log em nível "warn", sem IP de participante | Duração da chamada |
 | Preferências de voz (dispositivos, volumes, tecla) | Titular | Conforto | — | **Apenas no navegador** | Até limpar o navegador ou apagar os dados |
+| Silenciado/ensurdecido pela moderação | Moderador | Moderação de voz | Legítimo interesse | **Só em memória** (a ação fica no registro de moderação) | Até um moderador desfazer, o Concord reiniciar ou o titular apagar os dados |
 
 ### Teste de legítimo interesse (art. 10)
 
@@ -78,7 +79,9 @@ e dados de navegação.
 | Segredo do LiveKit vazar | No uso local, é gerado a cada execução e passado ao LiveKit por variável de ambiente, nunca pela linha de comando nem em arquivo |
 | Mídia interceptada | WebRTC com DTLS-SRTP obrigatório. Em produção, sinalização por `wss://` |
 | Microfone, câmera ou tela usados por terceiros | `Permissions-Policy` libera microfone, câmera e captura de tela só para o próprio Concord. A CSP só libera conexão com o LiveKit configurado |
-| Quem foi banido continuar na chamada | Banimento, saída de servidor privado e exclusão de canal ou servidor encerram a sessão de voz na hora |
+| Quem foi banido continuar na chamada | Banimento, saída de servidor privado e exclusão de canal ou servidor encerram a sessão de voz na hora, **também no LiveKit** (RemoveParticipant), sem depender do navegador |
+| Burlar o silêncio imposto pela moderação | "Silenciar no servidor" retira a permissão de microfone no LiveKit e muta a trilha no ar; reentrar recebe um token sem microfone. Testado com navegador real: chamar o SDK direto falha com "insufficient permissions" |
+| Chamada que segue depois de fechar a aba | Se o chat não reconectar em 15 s, o LiveKit remove a pessoa da sala |
 | Exposição de terceiros na transmissão de tela | Aviso antes de transmitir; as transmissões só são baixadas por quem clica em "Assistir" |
 | LiveKit órfão após uma queda | Job Object do Windows encerra o LiveKit junto com o Concord |
 | Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16), em lotes que não travam o chat. A retenção usa a ordem cronológica dos ids UUIDv7 |

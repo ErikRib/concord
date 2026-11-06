@@ -42,15 +42,36 @@ pub async fn ws_handler(
         .on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-/// Navegadores sempre mandam `Origin`; ela precisa ser o mesmo host do servidor.
+/// Origens extras permitidas (ex.: https://maquina.tailnet.ts.net atrás de um proxy que
+/// reescreve o `Host`), pela variável `CONCORD_ORIGENS`, separadas por vírgula.
+fn extra_origins() -> &'static [String] {
+    static ORIGINS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ORIGINS.get_or_init(|| {
+        std::env::var("CONCORD_ORIGENS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().trim_end_matches('/').to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+/// Navegadores sempre mandam `Origin`; ela precisa ser o mesmo host do servidor
+/// (ou uma origem listada explicitamente em `CONCORD_ORIGENS`).
 fn origin_allowed(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true; // clientes fora do navegador não são alvo de CSWSH
     };
-    let (Ok(origin), Some(host)) = (
-        origin.to_str(),
-        headers.get(header::HOST).and_then(|h| h.to_str().ok()),
-    ) else {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    if extra_origins()
+        .iter()
+        .any(|o| o.eq_ignore_ascii_case(origin))
+    {
+        return true;
+    }
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
         return false;
     };
     let origin_host = origin.split_once("://").map(|(_, h)| h).unwrap_or("");
@@ -82,7 +103,13 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn new(capacity: f64, per_sec: f64) -> Self {
-        RateLimiter { tokens: capacity, capacity, per_sec, last: Instant::now(), last_warn: None }
+        RateLimiter {
+            tokens: capacity,
+            capacity,
+            per_sec,
+            last: Instant::now(),
+            last_warn: None,
+        }
     }
 
     fn take(&mut self) -> bool {
@@ -101,7 +128,10 @@ impl RateLimiter {
     /// Evita responder a cada mensagem bloqueada.
     fn should_warn(&mut self) -> bool {
         let now = Instant::now();
-        if self.last_warn.is_none_or(|t| now.duration_since(t) > Duration::from_secs(3)) {
+        if self
+            .last_warn
+            .is_none_or(|t| now.duration_since(t) > Duration::from_secs(3))
+        {
             self.last_warn = Some(now);
             true
         } else {
@@ -134,9 +164,14 @@ fn deliver(state: &AppState, uid: Uuid, ev: Event, out: &Out) -> bool {
             None => ServerMsg::ServerRemoved { server_id: sid },
         }),
         Event::ServerDeleted(sid) => Some(ServerMsg::ServerRemoved { server_id: sid }),
-        Event::ReportsChanged(sid) => state
-            .reports_for(sid, uid)
-            .map(|reports| ServerMsg::Reports { server_id: sid, reports }),
+        Event::ReportsChanged(sid) => {
+            state
+                .reports_for(sid, uid)
+                .map(|reports| ServerMsg::Reports {
+                    server_id: sid,
+                    reports,
+                })
+        }
     };
     match msg {
         Some(m) => out.send(m).is_ok(),
@@ -152,7 +187,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (out, mut out_rx) = mpsc::unbounded_channel::<ServerMsg>();
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
-            let Ok(text) = serde_json::to_string(&msg) else { continue };
+            let Ok(text) = serde_json::to_string(&msg) else {
+                continue;
+            };
             if sink.send(WsMessage::Text(text)).await.is_err() {
                 return;
             }
@@ -173,11 +210,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     .ok()
     .flatten();
 
-    let Some(ClientMsg::Hello { secret, name, color, consent_version }) = hello else {
+    let Some(ClientMsg::Hello {
+        secret,
+        name,
+        color,
+        consent_version,
+    }) = hello
+    else {
         return finish(out, writer).await;
     };
     let Some(user_id) = derive_user_id(&secret) else {
-        let _ = out.send(ServerMsg::Error { message: "Identidade inválida".into() });
+        let _ = out.send(ServerMsg::Error {
+            message: "Identidade inválida".into(),
+        });
         return finish(out, writer).await;
     };
     // Sem consentimento para a versão atual da política, nada é tratado.
@@ -189,7 +234,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         return finish(out, writer).await;
     }
 
-    let mut me = User { id: user_id, name: clean_name(&name), color: clean_color(&color) };
+    let mut me = User {
+        id: user_id,
+        name: clean_name(&name),
+        color: clean_color(&color),
+    };
     match state.register_user(&me, consent_version) {
         Ok(true) => state.send_all(ServerMsg::ProfileUpdated { user: me.clone() }),
         Ok(false) => {}
@@ -232,10 +281,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     for sid in server_ids {
         let states = state.voice_states(sid);
         if !states.is_empty() {
-            let _ = out.send(ServerMsg::VoiceStates { server_id: sid, states });
+            let _ = out.send(ServerMsg::VoiceStates {
+                server_id: sid,
+                states,
+            });
         }
     }
-    state.send_all(ServerMsg::Presence { online: state.online_users() });
+    state.send_all(ServerMsg::Presence {
+        online: state.online_users(),
+    });
 
     // ~3 ações por segundo, com rajada de até 10.
     let mut limiter = RateLimiter::new(10.0, 3.0);
@@ -254,14 +308,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 }
                 match serde_json::from_str::<ClientMsg>(&text) {
                     Ok(ClientMsg::DeleteMyData) => {
-                        state.leave_voice(me.id, None);
+                        if let Some(s) = state.leave_voice(me.id, None, None) {
+                            state.lk_remove(s.channel_id, me.id);
+                        }
                         match state.delete_user_data(me.id) {
                             Ok(result) => {
                                 state.send_all(ServerMsg::UserPurged { user_id: me.id });
                                 for sid in result.servers_changed {
                                     state.emit(Event::ServerChanged(sid));
                                 }
-                                let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
+                                let _ = out.send(ServerMsg::DataDeleted {
+                                    messages_removed: result.messages_removed,
+                                });
                                 deleted = true;
                                 break;
                             }
@@ -271,13 +329,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         }
                     }
                     Ok(cmd) => {
-                        let mut cx = Ctx { state: &state, me: &mut me, conn_id, out: &out };
+                        let mut cx = Ctx {
+                            state: &state,
+                            me: &mut me,
+                            conn_id,
+                            out: &out,
+                        };
                         if let Err(e) = commands::handle(cmd, &mut cx) {
                             let _ = out.send(error_message(e));
                         }
                     }
                     Err(_) => {
-                        let _ = out.send(ServerMsg::Error { message: "Mensagem inválida".into() });
+                        let _ = out.send(ServerMsg::Error {
+                            message: "Mensagem inválida".into(),
+                        });
                     }
                 }
             }
@@ -287,12 +352,31 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 
     forwarder.abort();
-    state.leave_voice(me.id, Some(conn_id));
+    // Fechou a aba ou o chat caiu. A reconexão do chat restaura a sessão de voz; se a
+    // pessoa não voltar em 15 s, o LiveKit a tira da sala (não depende do navegador).
+    if let Some(s) = state.leave_voice(me.id, Some(conn_id), None) {
+        let st = state.clone();
+        let uid = me.id;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let back = st
+                .voice_sessions
+                .lock()
+                .unwrap()
+                .get(&uid)
+                .is_some_and(|v| v.channel_id == s.channel_id);
+            if !back {
+                st.lk_remove(s.channel_id, uid);
+            }
+        });
+    }
     state.online.lock().unwrap().remove(&conn_id);
     if !deleted {
         state.touch(me.id);
     }
-    state.send_all(ServerMsg::Presence { online: state.online_users() });
+    state.send_all(ServerMsg::Presence {
+        online: state.online_users(),
+    });
     finish(out, writer).await;
 }
 

@@ -6,6 +6,16 @@
 //   node tests/media.mjs            # sem janela (fonte de vídeo congelada: fps baixo é esperado)
 //   HEADED=1 node tests/media.mjs   # com janelas, para medir a fluidez real com GPU
 import puppeteer from "puppeteer-core";
+import { createHash } from "node:crypto";
+
+// Ana é administradora da instância (modera o servidor público "Concord").
+// Inicie o servidor com CONCORD_ADMINS igual à saída de `node tests/media.mjs --admin-id`.
+const ANA = "1".repeat(64);
+if (process.argv[2] === "--admin-id") {
+  const h = createHash("sha256").update("concord-user-id:" + ANA).digest().subarray(0, 16).toString("hex");
+  console.log(`${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`);
+  process.exit(0);
+}
 
 const CHROME = process.env.CHROME ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3999";
@@ -83,7 +93,7 @@ async function pcDiag(page) {
 
 const ctxA = browser.defaultBrowserContext();
 const ctxB = await browser.createBrowserContext(); // outro "navegador": outra identidade
-const A = await person(ctxA, "1".repeat(64), "Ana");
+const A = await person(ctxA, ANA, "Ana");
 const B = await person(ctxB, "2".repeat(64), "Bia");
 
 const voiceId = await A.evaluate(() => {
@@ -173,9 +183,58 @@ check(receiver.w >= 1280 && receiver.h >= 720, `Bia recebe a tela em ${receiver.
 check((receiver.fps ?? 0) > 0, `vídeo chegando na Bia: ${Math.round(receiver.fps ?? 0)} fps decodificados (${receiver.mbps} Mbps)`);
 check(!!receiver.statsText, `estatísticas aparecem no bloco da transmissão: "${receiver.statsText}"`);
 
+// ---------- moderação de voz aplicada no LiveKit ----------
+const bobId = await B.evaluate(() => state.me.id);
+const micOfBia = () =>
+  A.evaluate((id) => {
+    const p = voice.room.getParticipantByIdentity(id);
+    const pub = p?.getTrackPublication(LivekitClient.Track.Source.Microphone);
+    return { exists: !!pub, muted: pub ? pub.isMuted : true };
+  }, bobId);
+check(!(await micOfBia()).muted, "antes da moderação, o microfone da Bia está ativo para a Ana");
+
+await A.evaluate((id) => {
+  const s = state.servers.find((x) => x.name === "Concord");
+  send({ type: "voice_moderate", server_id: s.id, user_id: id, action: "mute" });
+}, bobId);
+await sleep(2500);
+check((await micOfBia()).muted, "silenciar no servidor muta a trilha da Bia no LiveKit");
+const perm = await B.evaluate(() => voice.room.localParticipant.permissions?.canPublishSources ?? []);
+check(!perm.includes(2) && !perm.includes("MICROPHONE") && !perm.includes("microphone"),
+  `LiveKit retirou a permissão de microfone da Bia (${JSON.stringify(perm)})`);
+
+// Cliente "modificado": tenta religar o microfone chamando o SDK direto, sem a interface.
+const bypass = await B.evaluate(async () => {
+  try {
+    await voice.room.localParticipant.setMicrophoneEnabled(true);
+    return "sem erro";
+  } catch (e) {
+    return `erro: ${e.message}`;
+  }
+});
+await sleep(2000);
+check((await micOfBia()).muted, `burlar pelo SDK não funciona; a Ana continua sem ouvir a Bia (${bypass})`);
+
+await A.evaluate((id) => {
+  const s = state.servers.find((x) => x.name === "Concord");
+  send({ type: "voice_moderate", server_id: s.id, user_id: id, action: "unmute" });
+}, bobId);
+await sleep(2500);
+await B.evaluate(() => applyMic());
+await sleep(2000);
+check(!(await micOfBia()).muted, "remover o silêncio devolve o microfone da Bia");
+
+// Desconectar: o LiveKit derruba a sessão da Bia mesmo que o navegador dela não "saia".
+await B.evaluate(() => { window.onVoiceEnded = () => {}; }); // simula cliente que ignora o aviso
+await A.evaluate((id) => {
+  const s = state.servers.find((x) => x.name === "Concord");
+  send({ type: "voice_moderate", server_id: s.id, user_id: id, action: "disconnect" });
+}, bobId);
+await A.waitForFunction(() => voice.room.remoteParticipants.size === 0, { timeout: 10000 }).catch(() => {});
+check(await A.evaluate(() => voice.room.remoteParticipants.size === 0), "desconectar remove a Bia da sala no próprio LiveKit");
+
 await A.evaluate(() => voiceLeave());
-await B.waitForFunction(() => voice.room.remoteParticipants.size === 0, { timeout: 10000 });
-check(true, "ao sair, Ana some da chamada da Bia");
+check(true, "Ana sai da chamada");
 
 await browser.close();
 console.log(failures ? `\n${failures} falha(s)` : "\nTudo certo");

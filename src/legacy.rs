@@ -27,13 +27,18 @@ struct LegacyData {
 /// UUIDv7 a partir da data original, para manter a ordem cronológica.
 fn v7_at(ms: i64) -> Uuid {
     let ms = ms.max(0) as u64;
-    Uuid::new_v7(Timestamp::from_unix(NoContext, ms / 1000, (ms % 1000) as u32 * 1_000_000))
+    Uuid::new_v7(Timestamp::from_unix(
+        NoContext,
+        ms / 1000,
+        (ms % 1000) as u32 * 1_000_000,
+    ))
 }
 
 pub fn import(conn: &Connection, path: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("Erro ao ler {}: {e}", path.display()))?;
-    let data: LegacyData =
-        serde_json::from_str(&text).map_err(|e| format!("Erro ao interpretar {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Erro ao ler {}: {e}", path.display()))?;
+    let data: LegacyData = serde_json::from_str(&text)
+        .map_err(|e| format!("Erro ao interpretar {}: {e}", path.display()))?;
 
     let run = || -> rusqlite::Result<usize> {
         let tx = conn.unchecked_transaction()?;
@@ -59,7 +64,13 @@ pub fn import(conn: &Connection, path: &Path) -> Result<(), String> {
         }
         for r in &data.reports {
             if let Some(&mid) = new_ids.get(&r.message_id) {
-                db::insert_report(&tx, &Report { message_id: mid, ..r.clone() })?;
+                db::insert_report(
+                    &tx,
+                    &Report {
+                        message_id: mid,
+                        ..r.clone()
+                    },
+                )?;
             }
         }
         for e in &data.mod_log {
@@ -72,7 +83,8 @@ pub fn import(conn: &Connection, path: &Path) -> Result<(), String> {
 
     // O arquivo antigo é renomeado, não apagado, para permitir conferência.
     let done = path.with_extension("json.migrado");
-    std::fs::rename(path, &done).map_err(|e| format!("Migração feita, mas não foi possível renomear o JSON: {e}"))?;
+    std::fs::rename(path, &done)
+        .map_err(|e| format!("Migração feita, mas não foi possível renomear o JSON: {e}"))?;
     println!(
         "Migração concluída: {} servidor(es), {} titular(es) e {count} mensagem(ns) importados.",
         data.servers.len(),
@@ -96,7 +108,13 @@ mod tests {
     fn migra_json_antigo_mantendo_ordem_e_denuncias() {
         let dir = std::env::temp_dir().join(format!("concord-legacy-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (sid, cid, uid, m1, m2) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let (sid, cid, uid, m1, m2) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
         // Formato da primeira versão: servidor sem dono/convite, mensagens com ids v4.
         let json = format!(
             r##"{{"servers":[{{"id":"{sid}","name":"Antigo","channels":[{{"id":"{cid}","name":"geral"}}]}}],
@@ -110,7 +128,12 @@ mod tests {
         );
         let legacy = dir.join("concord-data.json");
         std::fs::write(&legacy, json).unwrap();
-        let config = Config { retention_days: 30, controller: String::new(), contact: String::new(), admins: Default::default() };
+        let config = Config {
+            retention_days: 30,
+            controller: String::new(),
+            contact: String::new(),
+            admins: Default::default(),
+        };
         let st = AppState::open(&dir.join("t.db"), &legacy, config).unwrap();
 
         let cache = st.cache.lock().unwrap();
@@ -119,8 +142,16 @@ mod tests {
         drop(cache);
         let hist = st.read(|c| db::history(c, cid, None, 10)).unwrap();
         let order: Vec<_> = hist.iter().map(|m| m.content.as_str()).collect();
-        assert_eq!(order, ["primeira", "segunda"], "ordem cronológica preservada com UUIDv7");
-        assert_eq!(st.read(|c| db::count_reports(c, sid)).unwrap(), 1, "denúncia segue o novo id da mensagem");
+        assert_eq!(
+            order,
+            ["primeira", "segunda"],
+            "ordem cronológica preservada com UUIDv7"
+        );
+        assert_eq!(
+            st.read(|c| db::count_reports(c, sid)).unwrap(),
+            1,
+            "denúncia segue o novo id da mensagem"
+        );
         assert!(!legacy.exists() && dir.join("concord-data.json.migrado").exists());
         drop(st);
         let _ = std::fs::remove_dir_all(dir);

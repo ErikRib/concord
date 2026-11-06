@@ -19,9 +19,10 @@ exportação, eliminação, retenção, política (subir `POLICY_VERSION` se mud
   estatísticas reais, status e configurações do canal, política v3. Validado com teste de mídia real
   entre dois navegadores (`tests/media.mjs`)
 
+- **Moderação de voz:** silenciar e ensurdecer pelo servidor, mover e desconectar, aplicados no
+  LiveKit e testados contra um cliente que tenta burlar
+
 ### Pendente na voz
-- Moderação de voz: mutar e ensurdecer pelo servidor, mover entre canais e desconectar alguém. Exige
-  chamar a API administrativa do LiveKit
 - Medir a fluidez de 60 fps numa máquina com GPU (`HEADED=1 node tests/media.mjs`)
 - App de desktop (Tauri e SDK nativo do LiveKit) para igualar o Discord de desktop em 1440p e 4K
 

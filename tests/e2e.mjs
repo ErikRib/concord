@@ -202,7 +202,7 @@ if (!A.ready.voice_enabled) {
 
   A.send({ type: "voice_join", channel_id: voiceCh.id });
   const tok = await A.wait(type("voice_token"));
-  const lkUrl = (tok.url ?? "ws://localhost:7880").replace(/^ws/, "http");
+  const lkUrl = (tok.url ?? `ws://localhost:${tok.port}`).replace(/^ws/, "http");
   const v = await fetch(`${lkUrl}/rtc/validate?access_token=${encodeURIComponent(tok.token)}`);
   check(v.status === 200, `LiveKit aceita o token emitido pelo Concord (HTTP ${v.status})`);
   const bad = await fetch(`${lkUrl}/rtc/validate?access_token=${encodeURIComponent(tok.token.slice(0, -4) + "AAAA")}`);
@@ -232,7 +232,45 @@ if (!A.ready.voice_enabled) {
   A.send({ type: "voice_leave" });
   const cleared = await B.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.id === voiceCh.id && c.status === null));
   check(cleared != null, "status some quando o canal de voz esvazia (minimização)");
-  await sleep(1500);
+  await sleep(2500);
+
+  // ---------- moderação de voz ----------
+  const jwtSources = (t) => JSON.parse(Buffer.from(t.split(".")[1], "base64url")).video.canPublishSources;
+  A.send({ type: "update_channel", channel_id: voiceCh.id, user_limit: 0 });
+  B.send({ type: "voice_join", channel_id: voiceCh.id });
+  const bTok = await B.wait(type("voice_token"));
+  check(jwtSources(bTok.token).includes("microphone"), "token normal permite publicar o microfone");
+
+  B.send({ type: "voice_moderate", server_id: priv.id, user_id: A.id, action: "mute" });
+  check((await B.error()).includes("dono"), "moderador não silencia o dono");
+  A.send({ type: "voice_moderate", server_id: priv.id, user_id: B.id, action: "mute" });
+  check((await B.wait(type("info"))).message.includes("silenciou"), "silenciado é avisado");
+  const mutedSt = await B.wait((m) => m.type === "voice_states" && m.states.some((s) => s.user.id === B.id && s.server_muted));
+  check(mutedSt != null, "todos veem o ícone de silenciado pela moderação");
+  B.send({ type: "voice_join", channel_id: voiceCh.id }); // reentrar não burla o silêncio
+  const bTok2 = await B.wait(type("voice_token"));
+  check(!jwtSources(bTok2.token).includes("microphone"), "token de quem foi silenciado não permite microfone");
+
+  A.send({ type: "create_channel", server_id: priv.id, name: "Sala 2", kind: "voice" });
+  const sala2 = (await A.wait((m) => m.type === "server_updated" && m.server.channels.some((c) => c.name === "Sala 2"))).server
+    .channels.find((c) => c.name === "Sala 2");
+  A.send({ type: "voice_move", user_id: B.id, channel_id: sala2.id });
+  const moved = await B.wait((m) => m.type === "voice_token" && m.moved);
+  check(moved.channel_id === sala2.id && !jwtSources(moved.token).includes("microphone"), "mover entrega token do novo canal (e mantém o silêncio)");
+  await B.wait((m) => m.type === "voice_states" && m.states.some((s) => s.user.id === B.id && s.channel_id === sala2.id));
+  B.inbox.length = 0; // descarta mensagens antigas da fila
+  B.send({ type: "voice_leave", channel_id: voiceCh.id }); // saída atrasada do canal antigo
+  check(await B.none((m) => m.type === "voice_states" && m.server_id === priv.id && !m.states.some((s) => s.user.id === B.id), 600),
+    "saída atrasada do canal antigo não tira a pessoa do canal novo");
+
+  await sleep(2000);
+  A.send({ type: "voice_moderate", server_id: priv.id, user_id: B.id, action: "unmute" });
+  await B.wait((m) => m.type === "voice_states" && m.states.some((s) => s.user.id === B.id && !s.server_muted));
+  A.send({ type: "voice_moderate", server_id: priv.id, user_id: B.id, action: "disconnect" });
+  check((await B.wait(type("voice_ended"))).reason.includes("desconectou"), "desconectado pelo moderador é avisado");
+  const gone = await A.wait((m) => m.type === "voice_states" && !m.states.some((s) => s.user.id === B.id));
+  check(gone != null, "desconectado some da chamada");
+  await sleep(2000);
 }
 
 // ---------- convite, admin, eliminação ----------

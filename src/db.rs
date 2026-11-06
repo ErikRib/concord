@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::model::{Ban, Channel, ChannelKind, Message, ModLogEntry, Report, ReportView, Server, User};
+use crate::model::{
+    Ban, Channel, ChannelKind, Message, ModLogEntry, Report, ReportView, Server, User,
+};
 
 const READERS: usize = 4;
 
@@ -173,16 +175,25 @@ impl Db {
         for _ in 0..READERS {
             let r = Connection::open_with_flags(
                 path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_URI,
             )?;
             configure(&r)?;
             readers.push(Mutex::new(r));
         }
-        Ok(Db { writer: Mutex::new(writer), readers, next_reader: AtomicUsize::new(0) })
+        Ok(Db {
+            writer: Mutex::new(writer),
+            readers,
+            next_reader: AtomicUsize::new(0),
+        })
     }
 
     /// Executa uma leitura numa das conexões de leitura (em rodízio).
-    pub fn read<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    pub fn read<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
         let i = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
         let conn = self.readers[i].lock().unwrap();
         f(&conn)
@@ -196,7 +207,11 @@ impl Db {
 
     /// Mantém as estatísticas do planejador de consultas em dia.
     pub fn optimize(&self) {
-        let _ = self.writer.lock().unwrap().execute_batch("PRAGMA optimize;");
+        let _ = self
+            .writer
+            .lock()
+            .unwrap()
+            .execute_batch("PRAGMA optimize;");
     }
 }
 
@@ -213,7 +228,9 @@ fn migrate(c: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn is_empty(c: &Connection) -> rusqlite::Result<bool> {
-    c.query_row("SELECT NOT EXISTS (SELECT 1 FROM servers)", [], |r| r.get(0))
+    c.query_row("SELECT NOT EXISTS (SELECT 1 FROM servers)", [], |r| {
+        r.get(0)
+    })
 }
 
 /// Menor UUIDv7 possível no instante `ms`: tudo abaixo dele é mais antigo.
@@ -272,7 +289,11 @@ pub fn load_cache(c: &Connection) -> rusqlite::Result<Cache> {
         while let Some(r) = rows.next()? {
             let sid: Uuid = r.get(0)?;
             if let Some(&i) = index.get(&sid) {
-                let list = if which == 0 { &mut servers[i].members } else { &mut servers[i].moderators };
+                let list = if which == 0 {
+                    &mut servers[i].members
+                } else {
+                    &mut servers[i].moderators
+                };
                 list.push(r.get(1)?);
             }
         }
@@ -282,7 +303,11 @@ pub fn load_cache(c: &Connection) -> rusqlite::Result<Cache> {
     while let Some(r) = rows.next()? {
         let sid: Uuid = r.get(0)?;
         if let Some(&i) = index.get(&sid) {
-            servers[i].bans.push(Ban { user_id: r.get(1)?, reason: r.get(2)?, at: r.get(3)? });
+            servers[i].bans.push(Ban {
+                user_id: r.get(1)?,
+                reason: r.get(2)?,
+                at: r.get(3)?,
+            });
         }
     }
 
@@ -312,13 +337,23 @@ pub fn upsert_user(c: &Connection, id: Uuid, u: &UserRecord) -> rusqlite::Result
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(id) DO UPDATE SET name = ?2, color = ?3, consent_version = ?4,
                                        consented_at = ?5, last_seen = ?6",
-        params![id, u.name, u.color, u.consent_version, u.consented_at, u.last_seen],
+        params![
+            id,
+            u.name,
+            u.color,
+            u.consent_version,
+            u.consented_at,
+            u.last_seen
+        ],
     )?;
     Ok(())
 }
 
 pub fn touch_user(c: &Connection, id: Uuid, at: i64) -> rusqlite::Result<()> {
-    c.execute("UPDATE users SET last_seen = ?2 WHERE id = ?1", params![id, at])?;
+    c.execute(
+        "UPDATE users SET last_seen = ?2 WHERE id = ?1",
+        params![id, at],
+    )?;
     Ok(())
 }
 
@@ -358,7 +393,12 @@ pub fn delete_server(c: &Connection, id: Uuid) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn insert_channel(c: &Connection, server_id: Uuid, ch: &Channel, position: i64) -> rusqlite::Result<()> {
+pub fn insert_channel(
+    c: &Connection,
+    server_id: Uuid,
+    ch: &Channel,
+    position: i64,
+) -> rusqlite::Result<()> {
     c.execute(
         "INSERT INTO channels (id, server_id, name, position, kind, user_limit, bitrate, video_quality, status, status_by)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -384,7 +424,15 @@ pub fn update_channel(c: &Connection, ch: &Channel) -> rusqlite::Result<()> {
         "UPDATE channels SET name = ?2, user_limit = ?3, bitrate = ?4, video_quality = ?5,
                              status = ?6, status_by = ?7
          WHERE id = ?1",
-        params![ch.id, ch.name, ch.user_limit, ch.bitrate, ch.video_quality, ch.status, ch.status_by],
+        params![
+            ch.id,
+            ch.name,
+            ch.user_limit,
+            ch.bitrate,
+            ch.video_quality,
+            ch.status,
+            ch.status_by
+        ],
     )?;
     Ok(())
 }
@@ -395,7 +443,13 @@ pub fn delete_channel(c: &Connection, id: Uuid) -> rusqlite::Result<()> {
 }
 
 /// `table` é sempre uma constante do código ("server_members" ou "server_moderators").
-pub fn set_role(c: &Connection, table: &str, server_id: Uuid, user_id: Uuid, on: bool) -> rusqlite::Result<()> {
+pub fn set_role(
+    c: &Connection,
+    table: &str,
+    server_id: Uuid,
+    user_id: Uuid,
+    on: bool,
+) -> rusqlite::Result<()> {
     let sql = if on {
         format!("INSERT OR IGNORE INTO {table} (server_id, user_id) VALUES (?1, ?2)")
     } else {
@@ -414,7 +468,10 @@ pub fn insert_ban(c: &Connection, server_id: Uuid, b: &Ban) -> rusqlite::Result<
 }
 
 pub fn delete_ban(c: &Connection, server_id: Uuid, user_id: Uuid) -> rusqlite::Result<()> {
-    c.execute("DELETE FROM bans WHERE server_id = ?1 AND user_id = ?2", params![server_id, user_id])?;
+    c.execute(
+        "DELETE FROM bans WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id],
+    )?;
     Ok(())
 }
 
@@ -428,7 +485,11 @@ pub fn insert_message(c: &Connection, m: &Message) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn message_author(c: &Connection, channel_id: Uuid, message_id: Uuid) -> rusqlite::Result<Option<Uuid>> {
+pub fn message_author(
+    c: &Connection,
+    channel_id: Uuid,
+    message_id: Uuid,
+) -> rusqlite::Result<Option<Uuid>> {
     c.query_row(
         "SELECT author_id FROM messages WHERE id = ?1 AND channel_id = ?2",
         params![message_id, channel_id],
@@ -442,7 +503,11 @@ pub fn delete_message(c: &Connection, message_id: Uuid) -> rusqlite::Result<bool
     Ok(c.execute("DELETE FROM messages WHERE id = ?1", [message_id])? > 0)
 }
 
-pub fn delete_user_messages_in_server(c: &Connection, server_id: Uuid, user_id: Uuid) -> rusqlite::Result<usize> {
+pub fn delete_user_messages_in_server(
+    c: &Connection,
+    server_id: Uuid,
+    user_id: Uuid,
+) -> rusqlite::Result<usize> {
     c.execute(
         "DELETE FROM messages WHERE author_id = ?2
            AND channel_id IN (SELECT id FROM channels WHERE server_id = ?1)",
@@ -454,7 +519,11 @@ fn message_from_row(r: &Row) -> rusqlite::Result<Message> {
     Ok(Message {
         id: r.get(0)?,
         channel_id: r.get(1)?,
-        author: User { id: r.get(2)?, name: r.get(3)?, color: r.get(4)? },
+        author: User {
+            id: r.get(2)?,
+            name: r.get(3)?,
+            color: r.get(4)?,
+        },
         content: r.get(5)?,
         timestamp: r.get(6)?,
     })
@@ -465,7 +534,12 @@ const MESSAGE_COLUMNS: &str = "m.id, m.channel_id, m.author_id,
 
 /// Página de histórico em ordem cronológica. Com `before`, devolve as mensagens
 /// anteriores a ela. Paginação por chave: o custo não cresce com a profundidade.
-pub fn history(c: &Connection, channel_id: Uuid, before: Option<Uuid>, limit: usize) -> rusqlite::Result<Vec<Message>> {
+pub fn history(
+    c: &Connection,
+    channel_id: Uuid,
+    before: Option<Uuid>,
+    limit: usize,
+) -> rusqlite::Result<Vec<Message>> {
     let mut list: Vec<Message> = match before {
         Some(b) => c
             .prepare_cached(&format!(
@@ -497,7 +571,11 @@ pub fn insert_report(c: &Connection, r: &Report) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn report_exists(c: &Connection, message_id: Uuid, reporter_id: Uuid) -> rusqlite::Result<bool> {
+pub fn report_exists(
+    c: &Connection,
+    message_id: Uuid,
+    reporter_id: Uuid,
+) -> rusqlite::Result<bool> {
     c.query_row(
         "SELECT EXISTS (SELECT 1 FROM reports WHERE message_id = ?1 AND reporter_id = ?2)",
         params![message_id, reporter_id],
@@ -506,7 +584,11 @@ pub fn report_exists(c: &Connection, message_id: Uuid, reporter_id: Uuid) -> rus
 }
 
 pub fn count_reports(c: &Connection, server_id: Uuid) -> rusqlite::Result<usize> {
-    c.query_row("SELECT COUNT(*) FROM reports WHERE server_id = ?1", [server_id], |r| r.get(0))
+    c.query_row(
+        "SELECT COUNT(*) FROM reports WHERE server_id = ?1",
+        [server_id],
+        |r| r.get(0),
+    )
 }
 
 pub fn get_report(c: &Connection, id: Uuid) -> rusqlite::Result<Option<Report>> {
@@ -622,7 +704,11 @@ pub fn export_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<ExportRows> {
             })
         })?
         .collect::<Result<_, _>>()?;
-    Ok(ExportRows { messages, reports, mod_log })
+    Ok(ExportRows {
+        messages,
+        reports,
+        mod_log,
+    })
 }
 
 // ---------- LGPD: eliminação ----------
@@ -635,7 +721,10 @@ pub fn delete_user_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<usize> {
     c.execute("DELETE FROM server_members WHERE user_id = ?1", [uid])?;
     c.execute("DELETE FROM server_moderators WHERE user_id = ?1", [uid])?;
     c.execute("DELETE FROM bans WHERE user_id = ?1", [uid])?;
-    c.execute("UPDATE channels SET status = NULL, status_by = NULL WHERE status_by = ?1", [uid])?;
+    c.execute(
+        "UPDATE channels SET status = NULL, status_by = NULL WHERE status_by = ?1",
+        [uid],
+    )?;
     c.execute("UPDATE mod_log SET actor = NULL WHERE actor = ?1", [uid])?;
     c.execute("UPDATE mod_log SET target = NULL WHERE target = ?1", [uid])?;
     c.execute("DELETE FROM users WHERE id = ?1", [uid])?;
@@ -646,7 +735,11 @@ pub fn delete_user_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<usize> {
 
 /// Apaga um lote de mensagens mais antigas que `cutoff_ms`. Lotes pequenos
 /// mantêm cada transação curta, para não travar o chat.
-pub fn purge_messages_batch(c: &Connection, cutoff_ms: i64, batch: usize) -> rusqlite::Result<usize> {
+pub fn purge_messages_batch(
+    c: &Connection,
+    cutoff_ms: i64,
+    batch: usize,
+) -> rusqlite::Result<usize> {
     c.execute(
         "DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE id < ?1 LIMIT ?2)",
         params![v7_floor(cutoff_ms), batch as i64],

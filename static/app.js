@@ -526,6 +526,7 @@ function handle(m) {
 
     case "voice_states":
       state.voiceStates.set(m.server_id, m.states);
+      onVoiceStatesChanged();
       renderChannels();
       renderVoiceView();
       break;
@@ -733,6 +734,8 @@ function userMenu(e, user) {
       label: role === "mod" ? "Remover moderador" : "Tornar moderador",
       onClick: () => send({ type: "set_moderator", server_id: s.id, user_id: user.id, enabled: role !== "mod" }),
     },
+    ...(role !== "owner" && (role !== "mod" || s.can_manage) ? voiceModerationItems(s, user) : []),
+    !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage) && "-",
     !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage) && {
       label: "Banir do servidor", danger: true, onClick: () => banUser(s, user),
     },
@@ -965,8 +968,10 @@ function channelItem(server, c) {
         u.append(a, nm);
         if (s.streaming) u.append(el("span", "live-badge small", "AO VIVO"));
         if (s.camera) u.append(el("span", "vu-flag", "📷"));
-        if (s.deafened) u.append(el("span", "vu-flag", ICON_DEAF));
-        else if (s.muted) u.append(el("span", "vu-flag", ICON_MIC_OFF));
+        if (s.server_deafened) u.append(flag(ICON_DEAF, "Áudio desativado por um moderador", true));
+        else if (s.server_muted) u.append(flag(ICON_MIC_OFF, "Silenciado por um moderador", true));
+        else if (s.deafened) u.append(flag(ICON_DEAF, "Áudio desativado"));
+        else if (s.muted) u.append(flag(ICON_MIC_OFF, "Microfone desligado"));
         u.onclick = (e) => userMenu(e, s.user);
         ul.append(u);
       }
@@ -974,6 +979,12 @@ function channelItem(server, c) {
     }
   }
   return li;
+}
+
+function flag(icon, title, byMod) {
+  const f = el("span", byMod ? "vu-flag by-mod" : "vu-flag", icon);
+  f.title = title;
+  return f;
 }
 
 async function createChannel(server, kind) {
