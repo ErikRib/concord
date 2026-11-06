@@ -49,7 +49,7 @@ Faça o mesmo em **Firewall IPv6**, se a opção existir.
 Em <https://www.duckdns.org> (login com GitHub ou Google), crie **dois** subdomínios e aponte os
 dois para o **IP estático**:
 - `SEU-NOME` → o site (ex.: `meuconcord.duckdns.org`)
-- `voz-SEU-NOME` → a voz (ex.: `voz-meuconcord.duckdns.org`)
+- `voz-SEU-NOME` → o TURN da voz, usado por quem está atrás de firewall (ex.: `voz-meuconcord.duckdns.org`). A sinalização da voz passa pelo próprio endereço do site (`/rtc`), para não ser barrada por bloqueadores de anúncio
 
 ## 6. Chave SSH
 

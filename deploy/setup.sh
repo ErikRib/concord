@@ -115,7 +115,7 @@ fi
 # Endereços e chaves do LiveKit são sempre regravados (seguem os domínios informados).
 sed -i '/^CONCORD_LIVEKIT_/d' /etc/concord/concord.env
 cat >> /etc/concord/concord.env <<EOF
-CONCORD_LIVEKIT_URL=wss://$VOZ
+CONCORD_LIVEKIT_URL=wss://$SITE
 CONCORD_LIVEKIT_API_URL=http://127.0.0.1:7880
 CONCORD_LIVEKIT_KEY=$LK_KEY
 CONCORD_LIVEKIT_SECRET=$LK_SECRET
@@ -185,7 +185,14 @@ cat > /etc/caddy/Caddyfile <<EOF
 
 $SITE {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:3000
+	# Sinalização da voz pelo mesmo endereço do site: bloqueadores de anúncio
+	# barram conexões "de terceiros" para outros subdomínios do duckdns.org.
+	handle /rtc* {
+		reverse_proxy 127.0.0.1:7880
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
 }
 
 $VOZ {

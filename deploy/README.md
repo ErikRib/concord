@@ -61,7 +61,7 @@ com origem `0.0.0.0/0`:
 Em <https://www.duckdns.org> (login com GitHub ou Google), crie **dois** subdomínios apontando para
 o IP público da máquina:
 - `SEU-NOME` → o site (ex.: `meuconcord.duckdns.org`)
-- `voz-SEU-NOME` → a voz (ex.: `voz-meuconcord.duckdns.org`)
+- `voz-SEU-NOME` → o TURN da voz, usado por quem está atrás de firewall (ex.: `voz-meuconcord.duckdns.org`). A sinalização da voz passa pelo próprio endereço do site (`/rtc`), para não ser barrada por bloqueadores de anúncio
 
 ## 5. Enviar o código e instalar
 
