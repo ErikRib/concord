@@ -13,13 +13,11 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 use uuid::Uuid;
 
-use crate::model::{Channel, ClientMsg, Message, Server, ServerMsg, User};
-use crate::state::{
-    now_ms, AppState, HISTORY_SIZE, MAX_CHANNELS_PER_SERVER, MAX_CONNECTIONS, MAX_SERVERS,
-    MAX_STORED_PER_CHANNEL, POLICY_VERSION,
-};
+use crate::commands::{self, clean_color, clean_name, Ctx};
+use crate::model::{ClientMsg, Event, ServerMsg, User};
+use crate::state::{AppState, MAX_CONNECTIONS, POLICY_VERSION};
 
-type Out = mpsc::UnboundedSender<ServerMsg>;
+pub type Out = mpsc::UnboundedSender<ServerMsg>;
 
 /// Tamanho máximo de uma mensagem WebSocket (2000 caracteres cabem com folga).
 const MAX_WS_MESSAGE: usize = 16 * 1024;
@@ -127,6 +125,25 @@ fn derive_user_id(secret: &str) -> Option<Uuid> {
     Some(Uuid::from_bytes(bytes))
 }
 
+/// Traduz um evento interno no que esta conexão pode ver.
+fn deliver(state: &AppState, uid: Uuid, ev: Event, out: &Out) -> bool {
+    let msg = match ev {
+        Event::Send(aud, msg) => state.audience_includes(&aud, uid).then_some(msg),
+        Event::ServerChanged(sid) => Some(match state.server_view_for(sid, uid) {
+            Some(server) => ServerMsg::ServerUpdated { server },
+            None => ServerMsg::ServerRemoved { server_id: sid },
+        }),
+        Event::ServerDeleted(sid) => Some(ServerMsg::ServerRemoved { server_id: sid }),
+        Event::ReportsChanged(sid) => state
+            .reports_for(sid, uid)
+            .map(|reports| ServerMsg::Reports { server_id: sid, reports }),
+    };
+    match msg {
+        Some(m) => out.send(m).is_ok(),
+        None => true,
+    }
+}
+
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let _guard = ConnGuard::new(&state);
     let (mut sink, mut stream) = socket.split();
@@ -160,7 +177,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         return finish(out, writer).await;
     };
     let Some(user_id) = derive_user_id(&secret) else {
-        send_error(&out, "Identidade inválida");
+        let _ = out.send(ServerMsg::Error { message: "Identidade inválida".into() });
         return finish(out, writer).await;
     };
     // Sem consentimento para a versão atual da política, nada é tratado.
@@ -174,7 +191,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     let mut me = User { id: user_id, name: clean_name(&name), color: clean_color(&color) };
     if state.register_user(&me, consent_version) {
-        state.broadcast(ServerMsg::ProfileUpdated { user: me.clone() });
+        state.send_all(ServerMsg::ProfileUpdated { user: me.clone() });
     }
 
     let conn_id = Uuid::new_v4();
@@ -183,11 +200,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Inscreve antes de mandar o "ready" para não perder eventos.
     let mut rx = state.tx.subscribe();
     let fwd_out = out.clone();
+    let fwd_state = state.clone();
     let forwarder = tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(msg) => {
-                    if fwd_out.send(msg).is_err() {
+                Ok(ev) => {
+                    if !deliver(&fwd_state, user_id, ev, &fwd_out) {
                         break;
                     }
                 }
@@ -197,9 +215,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    let servers = state.data.lock().unwrap().servers.clone();
-    let _ = out.send(ServerMsg::Ready { me: me.clone(), servers, online: state.online_users() });
-    state.broadcast(ServerMsg::Presence { online: state.online_users() });
+    let _ = out.send(ServerMsg::Ready {
+        me: me.clone(),
+        servers: state.views_for(user_id),
+        online: state.online_users(),
+        is_admin: state.is_admin(user_id),
+    });
+    state.send_all(ServerMsg::Presence { online: state.online_users() });
 
     // ~3 ações por segundo, com rajada de até 10.
     let mut limiter = RateLimiter::new(10.0, 3.0);
@@ -210,20 +232,32 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             WsMessage::Text(text) => {
                 if !limiter.take() {
                     if limiter.should_warn() {
-                        send_error(&out, "Você está indo rápido demais. Aguarde um instante.");
+                        let _ = out.send(ServerMsg::Error {
+                            message: "Você está indo rápido demais. Aguarde um instante.".into(),
+                        });
                     }
                     continue;
                 }
                 match serde_json::from_str::<ClientMsg>(&text) {
                     Ok(ClientMsg::DeleteMyData) => {
-                        let removed = state.delete_user_data(me.id);
-                        state.broadcast(ServerMsg::UserPurged { user_id: me.id });
-                        let _ = out.send(ServerMsg::DataDeleted { messages_removed: removed });
+                        let result = state.delete_user_data(me.id);
+                        state.send_all(ServerMsg::UserPurged { user_id: me.id });
+                        for sid in result.servers_changed {
+                            state.emit(Event::ServerChanged(sid));
+                        }
+                        let _ = out.send(ServerMsg::DataDeleted { messages_removed: result.messages_removed });
                         deleted = true;
                         break;
                     }
-                    Ok(cmd) => handle_command(cmd, &mut me, conn_id, &state, &out),
-                    Err(_) => send_error(&out, "Mensagem inválida"),
+                    Ok(cmd) => {
+                        let mut cx = Ctx { state: &state, me: &mut me, conn_id, out: &out };
+                        if let Err(message) = commands::handle(cmd, &mut cx) {
+                            let _ = out.send(ServerMsg::Error { message });
+                        }
+                    }
+                    Err(_) => {
+                        let _ = out.send(ServerMsg::Error { message: "Mensagem inválida".into() });
+                    }
                 }
             }
             WsMessage::Close(_) => break,
@@ -236,7 +270,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     if !deleted {
         state.touch(me.id);
     }
-    state.broadcast(ServerMsg::Presence { online: state.online_users() });
+    state.send_all(ServerMsg::Presence { online: state.online_users() });
     finish(out, writer).await;
 }
 
@@ -244,179 +278,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 async fn finish(out: Out, writer: tokio::task::JoinHandle<()>) {
     drop(out);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
-}
-
-fn handle_command(cmd: ClientMsg, me: &mut User, conn_id: Uuid, state: &AppState, out: &Out) {
-    match cmd {
-        // Troca de apelido/cor (LGPD art. 18, III: correção). O id não muda.
-        ClientMsg::Hello { name, color, .. } => {
-            me.name = clean_name(&name);
-            me.color = clean_color(&color);
-            state.online.lock().unwrap().insert(conn_id, me.clone());
-            if state.update_profile(me) {
-                state.broadcast(ServerMsg::ProfileUpdated { user: me.clone() });
-            }
-            state.broadcast(ServerMsg::Presence { online: state.online_users() });
-        }
-
-        ClientMsg::CreateServer { name } => {
-            let name = clean_text(&name);
-            if name.is_empty() || name.chars().count() > 50 {
-                return send_error(out, "O nome do servidor precisa ter de 1 a 50 caracteres");
-            }
-            let server = Server {
-                id: Uuid::new_v4(),
-                name,
-                channels: vec![Channel { id: Uuid::new_v4(), name: "geral".into() }],
-            };
-            {
-                let mut data = state.data.lock().unwrap();
-                if data.servers.len() >= MAX_SERVERS {
-                    return send_error(out, "Limite de servidores atingido");
-                }
-                data.servers.push(server.clone());
-            }
-            state.mark_dirty();
-            state.broadcast(ServerMsg::ServerCreated { server });
-        }
-
-        ClientMsg::CreateChannel { server_id, name } => {
-            let name = clean_channel_name(&name);
-            if name.is_empty() {
-                return send_error(out, "Nome de canal inválido");
-            }
-            let channel = Channel { id: Uuid::new_v4(), name };
-            {
-                let mut data = state.data.lock().unwrap();
-                let Some(server) = data.servers.iter_mut().find(|s| s.id == server_id) else {
-                    return send_error(out, "Servidor não encontrado");
-                };
-                if server.channels.len() >= MAX_CHANNELS_PER_SERVER {
-                    return send_error(out, "Limite de canais atingido");
-                }
-                server.channels.push(channel.clone());
-            }
-            state.mark_dirty();
-            state.broadcast(ServerMsg::ChannelCreated { server_id, channel });
-        }
-
-        ClientMsg::SendMessage { channel_id, content } => {
-            let content = content.trim();
-            if content.is_empty() {
-                return;
-            }
-            if content.chars().count() > 2000 {
-                return send_error(out, "A mensagem passa de 2000 caracteres");
-            }
-            let message = Message {
-                id: Uuid::new_v4(),
-                channel_id,
-                author: me.clone(),
-                content: content.to_string(),
-                timestamp: now_ms(),
-            };
-            {
-                let mut data = state.data.lock().unwrap();
-                if !data.channel_exists(channel_id) {
-                    return send_error(out, "Canal não encontrado");
-                }
-                let list = data.messages.entry(channel_id).or_default();
-                list.push(message.clone());
-                if list.len() > MAX_STORED_PER_CHANNEL {
-                    let excess = list.len() - MAX_STORED_PER_CHANNEL;
-                    list.drain(..excess);
-                }
-            }
-            state.mark_dirty();
-            state.broadcast(ServerMsg::Message { message });
-        }
-
-        ClientMsg::FetchHistory { channel_id } => {
-            let messages = {
-                let data = state.data.lock().unwrap();
-                data.messages
-                    .get(&channel_id)
-                    .map(|l| l[l.len().saturating_sub(HISTORY_SIZE)..].to_vec())
-                    .unwrap_or_default()
-            };
-            let _ = out.send(ServerMsg::History { channel_id, messages });
-        }
-
-        ClientMsg::Typing { channel_id } => {
-            state.broadcast(ServerMsg::Typing { channel_id, user: me.clone() });
-        }
-
-        // Só o autor pode apagar.
-        ClientMsg::DeleteMessage { channel_id, message_id } => {
-            let removed = {
-                let mut data = state.data.lock().unwrap();
-                data.messages.get_mut(&channel_id).is_some_and(|list| {
-                    match list.iter().position(|m| m.id == message_id && m.author.id == me.id) {
-                        Some(pos) => {
-                            list.remove(pos);
-                            true
-                        }
-                        None => false,
-                    }
-                })
-            };
-            if removed {
-                state.mark_dirty();
-                state.broadcast(ServerMsg::MessageDeleted { channel_id, message_id });
-            }
-        }
-
-        ClientMsg::ExportMyData => {
-            let data = state.export_user_data(me);
-            let _ = out.send(ServerMsg::MyData { data });
-        }
-
-        // Tratado no laço principal, porque encerra a conexão.
-        ClientMsg::DeleteMyData => {}
-    }
-}
-
-fn send_error(out: &Out, message: &str) {
-    let _ = out.send(ServerMsg::Error { message: message.into() });
-}
-
-/// Remove caracteres de controle e espaços nas pontas.
-fn clean_text(s: &str) -> String {
-    s.trim().chars().filter(|c| !c.is_control()).collect()
-}
-
-fn clean_name(name: &str) -> String {
-    let name: String = clean_text(name).chars().take(32).collect();
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        "Anônimo".into()
-    } else {
-        name
-    }
-}
-
-fn clean_color(color: &str) -> String {
-    let ok = color.len() == 7
-        && color.starts_with('#')
-        && color[1..].chars().all(|c| c.is_ascii_hexdigit());
-    if ok {
-        color.to_string()
-    } else {
-        "#5865f2".into()
-    }
-}
-
-/// "Meu Canal!" -> "meu-canal"
-fn clean_channel_name(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.trim().to_lowercase().chars() {
-        if c.is_alphanumeric() || c == '_' {
-            out.push(c);
-        } else if (c.is_whitespace() || c == '-') && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches('-').chars().take(32).collect()
 }
 
 #[cfg(test)]
@@ -440,14 +301,6 @@ mod tests {
         assert!(origin_allowed(&h));
         h.insert(header::ORIGIN, "https://malicioso.com".parse().unwrap());
         assert!(!origin_allowed(&h));
-    }
-
-    #[test]
-    fn nomes() {
-        assert_eq!(clean_channel_name("  Meu Canal! "), "meu-canal");
-        assert_eq!(clean_channel_name("a ! b"), "a-b");
-        assert_eq!(clean_name("\u{0007}  "), "Anônimo");
-        assert_eq!(clean_color("red"), "#5865f2");
     }
 
     #[test]

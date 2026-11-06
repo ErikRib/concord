@@ -11,11 +11,14 @@
     <nav id="servers">
       <div id="server-list"></div>
       <div class="divider"></div>
-      <button id="add-server" class="server-icon add" title="Criar servidor">+</button>
+      <button id="add-server" class="server-icon add" title="Criar ou entrar em servidor">+</button>
     </nav>
 
     <aside id="sidebar">
-      <header id="server-name"></header>
+      <button id="server-header" title="Opções do servidor">
+        <span id="server-name"></span>
+        <span class="caret">▾</span>
+      </button>
       <div id="channels">
         <div class="section-title">
           <span>Canais de texto</span>
@@ -27,7 +30,7 @@
         <div class="avatar" id="me-avatar"></div>
         <div class="me-info">
           <div id="me-name"></div>
-          <div class="me-sub">Online</div>
+          <div class="me-sub" id="me-sub">Online</div>
         </div>
         <button id="rename" class="icon-btn" title="Mudar apelido">✎</button>
         <button id="open-privacy" class="icon-btn" title="Privacidade e meus dados" aria-label="Privacidade e meus dados">
@@ -61,14 +64,15 @@
   <div id="consent" class="overlay hidden">
     <form id="consent-card" class="card">
       <h2>Bem-vindo(a) ao Concord!</h2>
-      <p class="muted center">Sem cadastro: só escolha como quer ser chamado(a).</p>
+      <p class="muted center" id="consent-intro">Sem cadastro: só escolha como quer ser chamado(a).</p>
       <input id="consent-name" maxlength="32" placeholder="Seu apelido" autocomplete="off" required>
       <div class="notice">
         <strong>Como tratamos seus dados</strong>
         <ul>
-          <li>Guardamos só seu apelido, sua cor, suas mensagens e a data deste aceite.</li>
+          <li>Guardamos só seu apelido, sua cor, suas mensagens, os servidores em que você participa e a data deste aceite.</li>
           <li>Não guardamos IP, e-mail ou dados de navegação. Sem cookies e sem publicidade.</li>
-          <li>Suas mensagens ficam visíveis a quem usa este servidor e são apagadas em até <span id="retention-days">180</span> dias.</li>
+          <li>Mensagens ficam visíveis a quem participa do servidor e são apagadas em até <span id="retention-days">180</span> dias.</li>
+          <li>Moderadores podem apagar mensagens e banir. Se você denunciar algo, eles não ficam sabendo quem foi.</li>
           <li>Você pode baixar ou apagar seus dados quando quiser, no ícone de escudo ao lado do seu nome.</li>
         </ul>
         <a href="/privacidade" target="_blank" rel="noopener">Ler a Política de Privacidade completa</a>
@@ -89,11 +93,11 @@
       <div class="privacy-actions">
         <button id="export-data" class="row-btn">
           <strong>Baixar meus dados</strong>
-          <span>Arquivo JSON com seu perfil, aceite e todas as suas mensagens.</span>
+          <span>Arquivo JSON com seu perfil, aceite, servidores, mensagens, denúncias e moderação.</span>
         </button>
         <button id="privacy-rename" class="row-btn">
           <strong>Corrigir meu apelido</strong>
-          <span>Altera como você aparece para os outros.</span>
+          <span>Altera como você aparece para os outros, inclusive nas mensagens antigas.</span>
         </button>
         <a href="/privacidade" target="_blank" rel="noopener" class="row-btn">
           <strong>Política de Privacidade</strong>
@@ -101,7 +105,7 @@
         </a>
         <button id="delete-data" class="row-btn danger">
           <strong>Apagar meus dados e sair</strong>
-          <span>Remove todas as suas mensagens e revoga seu consentimento. Não pode ser desfeito.</span>
+          <span>Remove todas as suas mensagens e revoga seu consentimento. Servidores seus passam para um moderador. Não pode ser desfeito.</span>
         </button>
       </div>
       <div class="actions">
@@ -110,17 +114,20 @@
     </div>
   </div>
 
-  <!-- Modal genérico de texto -->
-  <div id="modal" class="overlay hidden">
-    <form id="modal-card" class="card">
-      <h2 id="modal-title"></h2>
-      <p id="modal-desc" class="muted center"></p>
-      <input id="modal-input" autocomplete="off">
+  <!-- Painel genérico (denúncias, banidos) -->
+  <div id="panel" class="overlay hidden">
+    <div class="card wide">
+      <h2 id="panel-title"></h2>
+      <div id="panel-body"></div>
       <div class="actions">
-        <button type="button" id="modal-cancel">Cancelar</button>
-        <button type="submit" id="modal-ok" class="primary">OK</button>
+        <button type="button" id="panel-close">Fechar</button>
       </div>
-    </form>
+    </div>
+  </div>
+
+  <!-- Diálogo genérico, montado pelo app.js -->
+  <div id="modal" class="overlay hidden">
+    <form id="modal-card" class="card"></form>
   </div>
 
   <div id="goodbye" class="overlay hidden">

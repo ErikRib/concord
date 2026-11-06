@@ -28,14 +28,31 @@ Tools instalado, a toolchain padrão (MSVC) também funciona.
 | `CONCORD_RETENCAO_DIAS` | `180` | Prazo após o qual mensagens e registros inativos são apagados |
 | `CONCORD_CONTROLADOR` | — | Nome do controlador, exibido na política de privacidade |
 | `CONCORD_CONTATO` | — | Contato do encarregado (DPO) / canal do titular |
+| `CONCORD_ADMINS` | — | Ids pseudônimos dos administradores da instância, separados por vírgula |
+
+### Como virar administrador
+
+Não há conta, então o administrador é identificado pelo id pseudônimo:
+
+1. Abra o Concord no navegador que você vai usar para administrar.
+2. Clique no escudo → "Baixar meus dados" e copie o valor de `id_pseudonimo`.
+3. Inicie o servidor com `CONCORD_ADMINS=<esse id>`.
+
+Administradores moderam o servidor público "Concord", que não tem dono, e qualquer servidor público.
+Eles **não** veem servidores privados dos quais não participam. Se os dados daquele navegador forem
+apagados, o id muda e é preciso repetir o processo.
 
 ## Funcionalidades
 
 - Servidores e canais de texto, mensagens em tempo real, lista de quem está online, aviso de "digitando…"
 - Histórico salvo em disco (até 1000 mensagens por canal, respeitando o prazo de retenção)
 - Apagar as próprias mensagens e trocar o apelido
-- **LGPD:** tela de consentimento com política versionada; menu 🛡 com "Baixar meus dados" (JSON)
-  e "Apagar meus dados" (eliminação imediata); retenção automática; página `/privacidade`
+- **Servidores públicos ou privados** (padrão), com link de convite `/convite/CÓDIGO` que pode ser gerado de novo
+- **Papéis:** dono, moderador, membro e visitante. Clique no nome de alguém para promover ou banir
+- **Moderação:** apagar mensagens e canais; banir com motivo obrigatório (a pessoa é avisada) e revogar
+- **Denúncias** com categorias. Os moderadores não sabem quem denunciou
+- **LGPD:** tela de consentimento com política versionada; menu de privacidade com "Baixar meus dados"
+  (JSON) e "Apagar meus dados" (eliminação imediata); retenção automática; página `/privacidade`
 
 ## Segurança
 
@@ -43,23 +60,39 @@ Tools instalado, a toolchain padrão (MSVC) também funciona.
   SHA-256 dele como id público. Saber o id de alguém não permite se passar por essa pessoa.
 - Verificação de origem no WebSocket, CSP restritiva e outros cabeçalhos de segurança
 - Limite de taxa, de tamanho de mensagem e de conexões
+- Permissões verificadas no servidor; cada conexão só recebe eventos dos servidores que pode ver
 - Nenhum IP é gravado e o servidor não registra conteúdo de mensagens
 
 Os detalhes e as pendências para colocar em produção estão em [docs/LGPD.md](docs/LGPD.md).
 
 ## Testes
 
+Testes unitários:
+
 ```
 cargo test
 ```
+
+Teste de ponta a ponta (Node 22+), com um servidor de teste na porta 3999 e um arquivo de dados
+**novo e vazio**. No PowerShell:
+
+```powershell
+$env:PORT="3999"; $env:CONCORD_DATA="$env:TEMP\concord-e2e.json"; Remove-Item $env:CONCORD_DATA -ErrorAction SilentlyContinue
+$env:CONCORD_CONTROLADOR="Teste <Ltda>"; $env:CONCORD_CONTATO="dpo@exemplo.com"; $env:CONCORD_RETENCAO_DIAS="30"
+$env:CONCORD_ADMINS = node tests/e2e.mjs --admin-id
+cargo run
+```
+
+Depois, em outro terminal, rode `node tests/e2e.mjs`.
 
 ## Estrutura
 
 ```
 src/main.rs        servidor HTTP, rotas, cabeçalhos de segurança, tarefas de salvamento e de retenção
-src/ws.rs          conexões WebSocket: identidade, consentimento, limites e comandos
-src/state.rs       estado, persistência e operações da LGPD (exportar, apagar, reter)
-src/model.rs       tipos e protocolo cliente/servidor
+src/ws.rs          conexões WebSocket: identidade, consentimento, limites e filtro de eventos
+src/commands.rs    comandos dos clientes, com todas as verificações de permissão
+src/state.rs       estado, visões por papel, persistência e operações da LGPD (exportar, apagar, reter)
+src/model.rs       tipos, papéis e protocolo cliente/servidor
 static/            cliente web e política de privacidade (embutidos no executável)
 docs/LGPD.md       registro do tratamento, direitos, medidas e pendências
 ```

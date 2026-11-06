@@ -1,3 +1,4 @@
+mod commands;
 mod model;
 mod state;
 mod ws;
@@ -30,6 +31,14 @@ async fn main() {
              o controlador e o canal de atendimento ao titular na política de privacidade."
         );
     }
+    if config.admins.is_empty() {
+        eprintln!(
+            "AVISO: nenhum administrador definido (CONCORD_ADMINS). O servidor público \"Concord\" \
+             ficará sem moderação. Seu id está em \"Baixar meus dados\" → id_pseudonimo."
+        );
+    } else {
+        println!("{} administrador(es) da instância configurado(s)", config.admins.len());
+    }
     let policy_page: &'static str = Box::leak(render_policy(&config).into_boxed_str());
 
     let state = Arc::new(AppState::load(data_path, config));
@@ -57,6 +66,8 @@ async fn main() {
     // O cliente web vai embutido no binário.
     let app = Router::new()
         .route("/", get(|| async { Html(include_str!("../static/index.html")) }))
+        // O código é lido pelo cliente; o servidor só entrega a mesma página.
+        .route("/convite/:code", get(|| async { Html(include_str!("../static/index.html")) }))
         .route("/privacidade", get(move || async move { Html(policy_page) }))
         .route("/style.css", get(|| async { asset("text/css", include_str!("../static/style.css")) }))
         .route(

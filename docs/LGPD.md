@@ -16,6 +16,19 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 | Versão e data do aceite | Sistema | Comprovar o consentimento (art. 8º, §2º) | Cumprimento de obrigação legal (art. 7º, II) | Servidor | Enquanto o titular tiver dados |
 | Último acesso | Sistema | Calcular a retenção de inativos | Consentimento | Servidor | Igual ao acima |
 | Endereço IP | Conexão | Manter a conexão aberta | Necessário ao serviço | **Só em memória**, nunca gravado | Duração da conexão |
+| Participação e papel em servidores | Titular (convite) / dono | Controlar acesso a servidores privados e poderes de moderação | Consentimento | Servidor | Enquanto o servidor existir ou até o titular sair ou apagar os dados |
+| Denúncias (categoria, detalhes, quem denunciou) | Titular | Moderação de conteúdo | Legítimo interesse (art. 7º, IX) | Servidor; quem denunciou **nunca é mostrado** aos moderadores | Até ser resolvida ou por `CONCORD_RETENCAO_DIAS` |
+| Banimentos (servidor, motivo, data) | Moderador | Afastar quem descumpre regras | Legítimo interesse | Servidor; visível aos moderadores e ao próprio banido | `CONCORD_RETENCAO_DIAS` (o banimento expira) |
+| Registro de moderação (ação, autor, alvo, data; **sem conteúdo**) | Sistema | Responsabilização e revisão de decisões (art. 6º, X) | Legítimo interesse | Servidor | `CONCORD_RETENCAO_DIAS` |
+
+### Teste de legítimo interesse (art. 10)
+
+- **Finalidade legítima:** manter servidores livres de spam, assédio e exposição de dados de terceiros.
+- **Necessidade:** só se guarda o mínimo. O registro de moderação não tem conteúdo de mensagens, e
+  denúncias resolvidas são apagadas.
+- **Expectativa do titular e salvaguardas:** a moderação é informada no aceite e na política. Quem
+  denuncia fica anônimo para os moderadores, quem é banido recebe o motivo, tudo aparece na
+  exportação e tudo expira com a retenção.
 
 **O que não é coletado:** e-mail, telefone, nome real, senha, localização, cookies, rastreadores
 e dados de navegação.
@@ -24,10 +37,11 @@ e dados de navegação.
 
 | Direito | Como o titular exerce | Implementação |
 |---|---|---|
-| Confirmação e acesso (I, II) | Menu 🛡 → "Baixar meus dados" | `ClientMsg::ExportMyData` → `AppState::export_user_data` |
+| Confirmação e acesso (I, II) | Menu de privacidade → "Baixar meus dados" (inclui servidores, denúncias feitas, banimentos recebidos e ações de moderação ligadas ao titular) | `ClientMsg::ExportMyData` → `AppState::export_user_data` |
 | Correção (III) | ✎ ou menu de privacidade → "Corrigir meu apelido" | `ClientMsg::Hello` durante a conexão → `update_profile`, que também atualiza o nome nas mensagens antigas (qualidade dos dados, art. 6º, V) |
 | Portabilidade (V) | O mesmo arquivo JSON do acesso | `export_user_data` |
-| Eliminação (VI) e revogação (IX) | Menu 🛡 → "Apagar meus dados e sair" | `ClientMsg::DeleteMyData` → `delete_user_data` (gravado em disco na hora) |
+| Eliminação (VI) e revogação (IX) | Menu de privacidade → "Apagar meus dados e sair" | `ClientMsg::DeleteMyData` → `delete_user_data`: apaga mensagens, denúncias, papéis e banimentos, anonimiza o registro de moderação e passa os servidores do titular para um moderador ou membro. É gravado em disco na hora |
+| Oposição (§2º) ao legítimo interesse | Contato do encarregado | Atendimento manual pelo controlador |
 | Informação (VII, VIII) | Página `/privacidade` e aviso na entrada | `static/privacidade.html` |
 
 ## 3. Consentimento (arts. 8º e 9º)
@@ -50,7 +64,11 @@ e dados de navegação.
 | Vazamento de URL para terceiros | `Referrer-Policy: no-referrer` e links com `noopener noreferrer` |
 | Spam e esgotamento de recursos | Limite de taxa por conexão (≈3 ações/s), mensagens de até 16 KiB, até 500 conexões, 200 servidores e 100 canais por servidor, tempo limite para identificação |
 | Corrupção do arquivo de dados | Gravação atômica (arquivo temporário seguido de renomeação) |
-| Apagar mensagem de outra pessoa | O servidor confere a autoria pelo id derivado |
+| Apagar mensagem de outra pessoa | O servidor confere a autoria pelo id derivado; só moderadores apagam mensagens alheias, e isso fica registrado |
+| Escalada de privilégio | Toda permissão é verificada no servidor, em `src/commands.rs`. O cliente só esconde botões. Testado com tentativas de membros criarem canais, se promoverem e apagarem mensagens alheias |
+| Vazamento de servidor privado | Cada conexão filtra os eventos pelo que a pessoa pode ver (`Audience` e `ServerView`). Membros, banidos e convite só chegam a quem modera. Admins da instância não veem servidores privados |
+| Adivinhar convites | Código aleatório de 12 caracteres (~70 bits), limite de taxa e troca do código a qualquer momento |
+| Retaliação contra quem denuncia | O id de quem denunciou nunca sai do servidor |
 | Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16) |
 
 ## 5. Pendências para colocar em produção
@@ -71,6 +89,7 @@ Estes itens dependem de quem vai operar a instância e não podem ser resolvidos
    deve chegar até ele.
 6. **Plano de resposta a incidentes (art. 48).** Defina quem avalia o incidente e como comunicar a
    ANPD e os titulares em prazo razoável.
-7. **Moderação.** Hoje qualquer pessoa cria servidores e canais. Para uso público, defina regras de
-   uso e um canal de denúncia de conteúdo.
+7. **Regras de uso e administradores.** A moderação já existe, mas o servidor público "Concord" só é
+   moderado se `CONCORD_ADMINS` estiver definido. Publique regras de convivência e um canal para
+   contestar decisões de moderação.
 8. **Relatório de impacto (RIPD, art. 38).** Recomendado se o uso crescer ou se houver dados sensíveis.

@@ -15,6 +15,10 @@
     <p>Esta política explica, em linguagem simples, como o Concord trata dados pessoais, em conformidade com a
       Lei Geral de Proteção de Dados (Lei nº 13.709/2018, “LGPD”).</p>
 
+    <h2>O que mudou na versão 2</h2>
+    <p>Incluímos servidores privados com convite, papéis de dono e moderador, denúncias e banimentos, e o registro
+      das ações de moderação. Os itens 2 a 7 explicam o que isso significa para seus dados.</p>
+
     <h2>1. Quem é o responsável</h2>
     <p><strong>Controlador:</strong> {{CONTROLADOR}}<br>
        <strong>Contato do encarregado (DPO) / canal do titular:</strong> {{CONTATO}}</p>
@@ -26,65 +30,96 @@
       <li><strong>Identificador pseudônimo</strong>, calculado a partir de um código aleatório gerado e guardado
         apenas no seu navegador;</li>
       <li><strong>Mensagens</strong> que você envia, com data e hora;</li>
+      <li><strong>Participação em servidores</strong>: de quais você é membro e seu papel (dono, moderador ou membro);</li>
+      <li><strong>Denúncias</strong> que você faz (motivo, detalhes e data);</li>
+      <li><strong>Banimentos</strong> que você receber (servidor, motivo e data);</li>
+      <li><strong>Registro de moderação</strong>: qual ação foi feita (ex.: “mensagem apagada”, “banimento”), por quem,
+        sobre quem e quando. Esse registro <em>não guarda o conteúdo das mensagens</em>;</li>
       <li><strong>Registro do seu aceite</strong> desta política (versão e data) e a data do último acesso.</li>
     </ul>
     <p>Seu endereço IP é usado apenas para manter a conexão aberta e <strong>não é gravado</strong> pelo Concord.
       Não usamos cookies, rastreadores, publicidade nem perfilamento.</p>
-    <p><strong>Atenção:</strong> evite escrever dados pessoais sensíveis (saúde, religião, opinião política, etc.)
-      ou dados de outras pessoas nas mensagens. Tudo o que você escreve fica visível para quem acessa esta instância.</p>
+    <p><strong>Atenção:</strong> evite escrever dados pessoais sensíveis (saúde, religião, opinião política etc.)
+      ou dados de outras pessoas nas mensagens. Tudo o que você escreve fica visível para quem participa do servidor.</p>
 
     <h2>3. Para que usamos (finalidade)</h2>
-    <p>Exclusivamente para permitir a conversa: mostrar suas mensagens, seu apelido e quem está online.
-      Não usamos os dados para nenhuma outra finalidade.</p>
+    <ul>
+      <li>Permitir a conversa: mostrar suas mensagens, seu apelido e quem está online;</li>
+      <li>Controlar quem pode ver cada servidor (públicos e privados);</li>
+      <li>Moderar: permitir que donos e moderadores removam conteúdo e afastem quem descumpre as regras,
+        e registrar essas ações para que possam ser revistas.</li>
+    </ul>
 
     <h2>4. Base legal</h2>
-    <p>Consentimento do titular (LGPD, art. 7º, I), dado ao marcar a caixa de aceite ao entrar.
-      Você pode revogá-lo a qualquer momento (veja o item 7).</p>
+    <ul>
+      <li>Conversa e participação em servidores: <strong>consentimento</strong> (LGPD, art. 7º, I), dado ao marcar a
+        caixa de aceite ao entrar. Você pode revogá-lo a qualquer momento (veja o item 8);</li>
+      <li>Denúncias, banimentos e registro de moderação: <strong>legítimo interesse</strong> (art. 7º, IX) em manter
+        um ambiente seguro, limitado ao estritamente necessário e com as garantias descritas aqui.</li>
+    </ul>
 
-    <h2>5. Com quem compartilhamos</h2>
-    <p>Não vendemos nem compartilhamos dados com terceiros. Mensagens, apelido e status online ficam visíveis
-      para as demais pessoas que usam esta instância do Concord, pois essa é a função do serviço.</p>
+    <h2>5. Quem vê o quê</h2>
+    <ul>
+      <li><strong>Servidores públicos</strong>: mensagens visíveis para qualquer pessoa desta instância;</li>
+      <li><strong>Servidores privados</strong>: mensagens visíveis só para quem entrou pelo convite. Nem os
+        administradores da instância veem servidores privados dos quais não participam;</li>
+      <li><strong>Denúncias</strong>: os moderadores veem a mensagem denunciada, o motivo e os detalhes, mas
+        <strong>nunca quem denunciou</strong>;</li>
+      <li><strong>Banimentos</strong>: a pessoa banida é avisada do servidor e do motivo. Moderadores do servidor veem
+        a lista de banidos;</li>
+      <li>O status online e o apelido aparecem para todas as pessoas conectadas à instância.</li>
+    </ul>
+    <p>Não vendemos nem compartilhamos dados com terceiros.</p>
 
     <h2>6. Por quanto tempo guardamos</h2>
     <ul>
-      <li>Mensagens são apagadas automaticamente após <strong>{{RETENCAO_DIAS}} dias</strong>;</li>
+      <li>Mensagens, denúncias, banimentos e o registro de moderação são apagados automaticamente após
+        <strong>{{RETENCAO_DIAS}} dias</strong>. Um banimento, portanto, expira nesse prazo;</li>
       <li>O registro de aceite é apagado quando você fica {{RETENCAO_DIAS}} dias sem acessar e não tem mais
         mensagens guardadas;</li>
-      <li>Ao usar “Apagar meus dados”, tudo é eliminado imediatamente.</li>
+      <li>Quando um servidor ou canal é apagado, as mensagens dele são eliminadas na hora;</li>
+      <li>Ao usar “Apagar meus dados”, tudo é eliminado imediatamente (veja o item 8).</li>
     </ul>
 
-    <h2>7. Seus direitos (LGPD, art. 18)</h2>
-    <p>No menu <strong>Privacidade</strong> (ícone de escudo, no canto inferior esquerdo) você pode, sem precisar
-      pedir a ninguém:</p>
+    <h2>7. Moderação e seus direitos</h2>
+    <p>Decisões de moderação são tomadas por pessoas (donos e moderadores), não por sistemas automáticos.
+      Se você foi banido(a), recebe o motivo. Para contestar uma decisão, fale com o dono do servidor ou com o
+      contato do item 1. As ações de moderação que envolvem você aparecem em “Baixar meus dados”.</p>
+
+    <h2>8. Seus direitos (LGPD, art. 18)</h2>
+    <p>No menu de privacidade (ícone de escudo, no canto inferior esquerdo) você pode, sem precisar pedir a ninguém:</p>
     <ul>
-      <li><strong>Acessar e levar seus dados</strong> (portabilidade): “Baixar meus dados” gera um arquivo JSON;</li>
-      <li><strong>Corrigir</strong> seu apelido a qualquer momento;</li>
-      <li><strong>Eliminar seus dados e revogar o consentimento</strong>: “Apagar meus dados” remove suas mensagens
-        e seu registro;</li>
-      <li>Apagar mensagens individualmente.</li>
+      <li><strong>Acessar e levar seus dados</strong> (portabilidade): “Baixar meus dados” gera um arquivo JSON com
+        perfil, aceite, servidores, mensagens, denúncias feitas, banimentos recebidos e ações de moderação ligadas a você;</li>
+      <li><strong>Corrigir</strong> seu apelido a qualquer momento, inclusive nas mensagens antigas;</li>
+      <li><strong>Eliminar seus dados e revogar o consentimento</strong>: “Apagar meus dados” remove suas mensagens,
+        denúncias, papéis e banimentos e seu registro. No registro de moderação, seu identificador é removido das
+        ações. Se você for dono(a) de um servidor, ele passa para um moderador ou para o membro mais antigo;</li>
+      <li>Apagar mensagens individualmente e sair de servidores.</li>
     </ul>
     <p>Como não há conta, seus dados ficam ligados ao código guardado <em>neste navegador</em>. Se você limpar os
       dados do navegador, não será possível comprovar a autoria das mensagens antigas; elas serão apagadas
       automaticamente ao fim do prazo de retenção. Para outros pedidos (confirmação, informação sobre
-      compartilhamento, oposição), use o contato do item 1. Você também pode peticionar à Autoridade Nacional de
-      Proteção de Dados (ANPD).</p>
+      compartilhamento, oposição ao tratamento por legítimo interesse), use o contato do item 1. Você também pode
+      peticionar à Autoridade Nacional de Proteção de Dados (ANPD).</p>
 
-    <h2>8. Segurança</h2>
+    <h2>9. Segurança</h2>
     <p>Adotamos medidas técnicas como: identificador derivado por hash criptográfico (ninguém consegue se passar
-      por você só conhecendo seu identificador), bloqueio de conexões de outros sites, limites de tamanho e de
-      frequência de mensagens, cabeçalhos de segurança contra injeção de código e minimização dos dados guardados.
-      Em caso de incidente de segurança que possa causar risco ou dano relevante, os titulares e a ANPD serão
-      comunicados (LGPD, art. 48).</p>
+      por você só conhecendo seu identificador), verificação de permissões no servidor para cada ação, convites
+      aleatórios que podem ser trocados a qualquer momento, bloqueio de conexões de outros sites, limites de tamanho
+      e de frequência de mensagens, cabeçalhos de segurança contra injeção de código e minimização dos dados
+      guardados. Em caso de incidente de segurança que possa causar risco ou dano relevante, os titulares e a ANPD
+      serão comunicados (LGPD, art. 48).</p>
 
-    <h2>9. Crianças e adolescentes</h2>
+    <h2>10. Crianças e adolescentes</h2>
     <p>O Concord é destinado a pessoas com <strong>18 anos ou mais</strong>.</p>
 
-    <h2>10. Armazenamento no seu navegador</h2>
+    <h2>11. Armazenamento no seu navegador</h2>
     <p>Usamos o armazenamento local do navegador (<code>localStorage</code>) apenas para guardar seu código de
       identificação, apelido, cor, aceite desta política e o último canal aberto. Esses dados não saem do seu
       aparelho, exceto o apelido, a cor e o identificador derivado.</p>
 
-    <h2>11. Mudanças nesta política</h2>
+    <h2>12. Mudanças nesta política</h2>
     <p>Se esta política mudar, a versão será atualizada e pediremos seu aceite novamente antes de continuar.</p>
   </article>
 </body>
