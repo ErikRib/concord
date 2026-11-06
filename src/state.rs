@@ -182,6 +182,18 @@ impl Data {
             public: s.public,
             owner_id: s.owner_id,
             moderators: s.moderators.clone(),
+            members: (!s.public).then(|| {
+                s.owner_id
+                    .iter()
+                    .chain(s.members.iter())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .filter_map(|id| {
+                        let u = self.users.get(id)?;
+                        Some(User { id: *id, name: u.name.clone(), color: u.color.clone() })
+                    })
+                    .collect()
+            }),
             role: s.role(uid),
             can_moderate: moderate,
             can_manage: s.can_manage(uid, admin),

@@ -434,7 +434,12 @@ function handle(m) {
           if (msg.author.id === m.user.id) msg.author = m.user;
         }
       }
+      for (const s of state.servers) {
+        const i = s.members?.findIndex((u) => u.id === m.user.id) ?? -1;
+        if (i >= 0) s.members[i] = m.user;
+      }
       renderMessages("keep");
+      renderMembers();
       break;
 
     case "history":
@@ -964,21 +969,45 @@ function renderTyping() {
   $("#typing").textContent = text;
 }
 
+/**
+ * Servidor privado: membros dele, separados em online e offline.
+ * Servidor público: quem está online na instância (todos podem participar).
+ */
 function renderMembers() {
   const server = currentServer();
-  $("#members-title").textContent = `Online — ${state.online.length}`;
+  const onlineById = new Map(state.online.map((u) => [u.id, u]));
+  let online, offline;
+  if (server?.members) {
+    // O perfil de quem está online é o mais atual.
+    online = server.members.filter((u) => onlineById.has(u.id)).map((u) => onlineById.get(u.id));
+    offline = server.members.filter((u) => !onlineById.has(u.id));
+    $("#members-title").textContent = `Membros — ${server.members.length}`;
+  } else {
+    online = state.online;
+    offline = [];
+    $("#members-title").textContent = server ? "Servidor público" : "";
+  }
+  const rank = (u) => ({ owner: 0, mod: 1 })[roleIn(server, u.id)] ?? 2;
+  const byRole = (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "pt-BR");
+
   const list = $("#member-list");
   list.replaceChildren();
-  for (const u of state.online) {
-    const li = el("li");
-    const name = el("span", "name", u.name);
-    name.style.color = u.color;
-    li.append(avatar(u), name);
-    const badge = roleBadge(server, u.id);
-    if (badge) li.append(badge);
-    li.onclick = (e) => userMenu(e, u);
-    list.append(li);
-  }
+  const section = (title, users, isOnline) => {
+    if (users.length === 0) return;
+    list.append(el("li", "member-section", `${title} — ${users.length}`));
+    for (const u of [...users].sort(byRole)) {
+      const li = el("li", isOnline ? null : "offline");
+      const name = el("span", "name", u.name);
+      name.style.color = u.color;
+      li.append(avatar(u), name);
+      const badge = roleBadge(server, u.id);
+      if (badge) li.append(badge);
+      li.onclick = (e) => userMenu(e, u);
+      list.append(li);
+    }
+  };
+  section("Online", online, true);
+  section("Offline", offline, false);
 }
 
 function renderMe() {

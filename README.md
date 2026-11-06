@@ -64,6 +64,7 @@ apagados, o id muda e é preciso repetir o processo.
 - Nenhum IP é gravado e o servidor não registra conteúdo de mensagens
 
 Os detalhes e as pendências para colocar em produção estão em [docs/LGPD.md](docs/LGPD.md).
+O que vem a seguir, incluindo a importação do Discord e os bots, está em [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Testes
 

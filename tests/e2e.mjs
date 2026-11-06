@@ -103,6 +103,9 @@ check((await B.error()).includes("inválido"), "convite inválido é recusado");
 B.send({ type: "join_server", code: priv.invite_code });
 const bJoin = (await B.wait((m) => m.type === "server_updated" && m.server.id === priv.id)).server;
 check(bJoin.role === "member" && !bJoin.can_moderate && bJoin.invite_code === null && bJoin.bans === null, "membro entra sem ver convite nem banidos");
+const names = (bJoin.members ?? []).map((u) => u.name).sort().join(",");
+check(names === "Ana,Bia", "servidor privado lista seus membros (para online/offline)");
+check(lobby.members === null, "servidor público não expõe lista de membros");
 
 // ---------- permissões ----------
 B.send({ type: "create_channel", server_id: priv.id, name: "x" });

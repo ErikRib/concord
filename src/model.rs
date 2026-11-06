@@ -125,6 +125,9 @@ pub struct ServerView {
     pub public: bool,
     pub owner_id: Option<Uuid>,
     pub moderators: Vec<Uuid>,
+    /// Só em servidores privados: quem participa (para a lista online/offline).
+    /// Em públicos a lista é quem está online na instância.
+    pub members: Option<Vec<User>>,
     pub role: Role,
     pub can_moderate: bool,
     pub can_manage: bool,
