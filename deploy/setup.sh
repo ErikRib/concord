@@ -21,9 +21,11 @@ BUILD_USER="${SUDO_USER:-root}"
 [ -f "$SRC/Cargo.toml" ] || { echo "Rode a partir da pasta do código do Concord."; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
 
-step "Pacotes do sistema"
+step "Atualizações de segurança do sistema e pacotes necessários"
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a # reinicia serviços afetados sem perguntar
 apt-get update -q
+apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
 apt-get install -y -q build-essential pkg-config curl ca-certificates gnupg debian-keyring \
   debian-archive-keyring apt-transport-https iptables-persistent unattended-upgrades
 
