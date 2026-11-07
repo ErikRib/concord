@@ -39,6 +39,7 @@ const browser = await puppeteer.launch({
 });
 
 // Aba que será transmitida: animação a 60 fps em 1920x1080.
+const LivekitClientQualityHigh = 2; // VideoQuality.HIGH
 const target = await browser.newPage();
 await target.setViewport({ width: 1920, height: 1080 });
 await target.goto(`data:text/html,${encodeURIComponent(`<!doctype html><title>Alvo</title><body style="margin:0;background:#000">
@@ -47,6 +48,7 @@ const c=document.getElementById('c').getContext('2d');let t=0;window.frames0=0;s
 (function f(){t++;window.frames0++;c.fillStyle='hsl('+(t%360)+',70%,30%)';c.fillRect(0,0,1920,1080);
 c.fillStyle='#fff';c.font='120px sans-serif';c.fillText('Concord '+t,100+(t*7)%1400,500);
 for(let i=0;i<40;i++){c.fillRect((t*13+i*97)%1920,(i*53+t*5)%1080,40,40)}requestAnimationFrame(f)})();
+const ac=new AudioContext();const o=ac.createOscillator();o.frequency.value=330;o.connect(ac.destination);o.start();
 </script>`)}`);
 
 async function person(ctx, secret, name) {
@@ -182,6 +184,26 @@ check(receiver.w >= 1280 && receiver.h >= 720, `Bia recebe a tela em ${receiver.
 // Informativo: sem GPU e com a aba de origem congelada, o ambiente de teste não gera 60 fps reais.
 check((receiver.fps ?? 0) > 0, `vídeo chegando na Bia: ${Math.round(receiver.fps ?? 0)} fps decodificados (${receiver.mbps} Mbps)`);
 check(!!receiver.statsText, `estatísticas aparecem no bloco da transmissão: "${receiver.statsText}"`);
+
+// Áudio da transmissão (a aba "Alvo" toca um tom): precisa chegar a quem assiste.
+const shareAudio = await B.evaluate(async () => {
+  const p = [...voice.room.remoteParticipants.values()][0];
+  const pub = p.getTrackPublication(LivekitClient.Track.Source.ScreenShareAudio);
+  const st = await pub?.audioTrack?.getReceiverStats?.();
+  return { published: !!pub, subscribed: !!pub?.isSubscribed, bytes: st?.bytesReceived ?? 0, quality: pub?.videoQuality };
+});
+check(shareAudio.subscribed && shareAudio.bytes > 1000, `Bia recebe o áudio da transmissão (${JSON.stringify(shareAudio)})`);
+const shareAudioSender = await A.evaluate(() => {
+  const t = voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.ScreenShareAudio)?.audioTrack?.mediaStreamTrack;
+  const s = t?.getSettings() ?? {};
+  return { ec: s.echoCancellation, ns: s.noiseSuppression, agc: s.autoGainControl };
+});
+check(shareAudioSender.ec === false && shareAudioSender.ns === false, `áudio da transmissão sai sem o processamento de voz (${JSON.stringify(shareAudioSender)})`);
+const quality = await B.evaluate(() => {
+  const p = [...voice.room.remoteParticipants.values()][0];
+  return p.getTrackPublication(LivekitClient.Track.Source.ScreenShare)?.videoQuality;
+});
+check(quality === LivekitClientQualityHigh, `quem assiste pede a qualidade original da transmissão (${quality})`);
 
 // ---------- moderação de voz aplicada no LiveKit ----------
 const bobId = await B.evaluate(() => state.me.id);

@@ -975,7 +975,7 @@ function renderVoiceSettingsSection(c) {
   list.append(
     el("div", null, `Modo de entrada: ${modeText}`),
     el("div", null, `Supressão de ruído: ${vset.noise ? "ligada" : "desligada"} · Cancelamento de eco: ${vset.echo ? "ligado" : "desligado"}`),
-    el("div", null, `Codec de vídeo: ${vset.codec.toUpperCase()} · Qualidade preferida da tela: ${vset.preset}`),
+    el("div", null, `Codec de vídeo: ${vset.codec === "auto" ? "automático (GPU)" : vset.codec.toUpperCase()} · Qualidade preferida da tela: ${vset.preset}`),
   );
   s.append(list);
   const s2 = settingsSection(c);

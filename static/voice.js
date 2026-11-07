@@ -16,6 +16,7 @@ const SCREEN_PRESETS = [
 ];
 
 const CODECS = [
+  ["auto", "Automático — escolhe um codec com aceleração na sua GPU (recomendado)"],
   ["h264", "H.264 — mais compatível, com aceleração de hardware na maioria das GPUs"],
   ["vp9", "VP9 — ótimo para texto e código"],
   ["av1", "AV1 — o mais eficiente; exige GPU recente para codificar bem"],
@@ -31,7 +32,7 @@ const vset = Object.assign(
     agc: true,
     mode: "vad", // "vad" = ativação por voz; "ptt" = apertar para falar
     pttKey: "KeyV",
-    codec: "h264",
+    codec: "auto",
     preset: "1080p60",
     hint: "motion",
     shareAudio: true,
@@ -40,6 +41,37 @@ const vset = Object.assign(
   load("concord.voice", {}),
 );
 const saveVset = () => store("concord.voice", vset);
+// Versões antigas gravavam "h264" como padrão; passa a ser "automático" uma única vez.
+if (!vset.codecV2) {
+  if (vset.codec === "h264") vset.codec = "auto";
+  vset.codecV2 = true;
+  saveVset();
+}
+
+/**
+ * Codec efetivo. "auto": o primeiro com codificação por hardware nesta máquina (consulta o
+ * navegador). Ordem: H.264 (todo mundo decodifica por hardware), AV1, VP9. Sem hardware: H.264.
+ */
+const codecCache = new Map();
+async function pickCodec(width, height, fps, bitrate) {
+  if (vset.codec !== "auto") return vset.codec;
+  const key = `${width}x${height}@${fps}`;
+  if (codecCache.has(key)) return codecCache.get(key);
+  let chosen = "h264";
+  if (navigator.mediaCapabilities?.encodingInfo) {
+    for (const [codec, mime] of [["h264", "video/H264"], ["av1", "video/AV1"], ["vp9", "video/VP9"]]) {
+      try {
+        const info = await navigator.mediaCapabilities.encodingInfo({
+          type: "webrtc",
+          video: { contentType: mime, width, height, bitrate, framerate: fps },
+        });
+        if (info.supported && info.powerEfficient) { chosen = codec; break; }
+      } catch {}
+    }
+  }
+  codecCache.set(key, chosen);
+  return chosen;
+}
 
 const voice = {
   room: null,
@@ -94,7 +126,11 @@ async function onVoiceToken(m) {
   voice.videoQuality = m.video_quality;
 
   const room = new LK.Room({
-    adaptiveStream: true, // recebe a camada do tamanho em que o vídeo aparece na tela
+    // Sem adaptiveStream: com ele, o SDK escolhe a camada pelo tamanho do vídeo na tela e ignora
+    // qualquer escolha manual; uma transmissão num bloco menor que a tela chegava em 720p30.
+    // A qualidade é definida em applyVideoQualities(); o LiveKit ainda reduz sozinho se a
+    // conexão de quem assiste não aguentar.
+    adaptiveStream: false,
     dynacast: true, // quem transmite deixa de enviar camadas que ninguém está vendo
     webAudioMix: true, // permite volume individual acima de 100%
     audioCaptureDefaults: micConstraints(),
@@ -103,7 +139,7 @@ async function onVoiceToken(m) {
       audioPreset: { maxBitrate: m.bitrate * 1000 },
       dtx: true,
       red: true,
-      videoCodec: vset.codec,
+      videoCodec: vset.codec === "auto" ? "h264" : vset.codec,
     },
   });
   voice.room = room;
@@ -363,7 +399,8 @@ async function toggleCamera() {
   if (!lp) return;
   const preset = voice.videoQuality === "720p" ? LK.VideoPresets.h720 : LK.VideoPresets.h1080;
   try {
-    await lp.setCameraEnabled(!lp.isCameraEnabled, { resolution: preset.resolution }, { simulcast: true, videoCodec: vset.codec });
+    const codec = await pickCodec(preset.resolution.width, preset.resolution.height, 30, preset.encoding.maxBitrate);
+    await lp.setCameraEnabled(!lp.isCameraEnabled, { resolution: preset.resolution }, { simulcast: true, videoCodec: codec });
   } catch (e) {
     console.error(e);
     toast("Não foi possível usar a câmera");
@@ -376,12 +413,7 @@ async function toggleCamera() {
 async function toggleScreenShare() {
   const lp = voice.room?.localParticipant;
   if (!lp) return;
-  if (lp.isScreenShareEnabled) {
-    await lp.setScreenShareEnabled(false);
-    syncVoiceState();
-    renderVoiceAll();
-    return;
-  }
+  if (lp.isScreenShareEnabled) return stopScreenShare();
   if (!navigator.mediaDevices?.getDisplayMedia) return toast("Este navegador não permite transmitir a tela");
   const r = await dialog({
     title: "Transmitir tela",
@@ -401,37 +433,99 @@ async function toggleScreenShare() {
   saveVset();
 
   const [, , width, height, fps, maxBitrate] = SCREEN_PRESETS.find((p) => p[0] === r.preset);
-  // VP9 e AV1 usam camadas SVC; H.264 usa simulcast (uma camada 720p extra para conexões fracas).
-  const svc = vset.codec === "vp9" || vset.codec === "av1";
+
+  // Captura feita aqui (e não pelo SDK) para usar todas as opções do navegador: áudio sem o
+  // processamento de voz, áudio da janela (Chrome recente) e sem o eco da própria chamada.
+  let stream;
   try {
-    await lp.setScreenShareEnabled(
-      true,
-      {
-        audio: r.audio,
-        systemAudio: r.audio ? "include" : "exclude",
-        resolution: { width, height, frameRate: fps },
-        contentHint: r.hint,
-        selfBrowserSurface: "exclude",
-        surfaceSwitching: "include",
-      },
-      {
-        videoCodec: vset.codec,
-        // O padrão do LiveKit é 1080p a 15 fps; aqui vale o preset escolhido.
-        screenShareEncoding: { maxBitrate, maxFramerate: fps, priority: "high" },
-        simulcast: !svc,
-        screenShareSimulcastLayers: svc ? undefined : [new LK.VideoPreset(1280, 720, 1_500_000, Math.min(fps, 30))],
-        scalabilityMode: svc ? "L3T3_KEY" : undefined,
-        degradationPreference: r.hint === "motion" ? "maintain-framerate" : "maintain-resolution",
-      },
-    );
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: fps, max: fps } },
+      audio: r.audio
+        ? {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 2,
+            sampleRate: 48000,
+            suppressLocalAudioPlayback: false,
+            restrictOwnAudio: true, // não manda de volta o som da própria chamada
+          }
+        : false,
+      systemAudio: r.audio ? "include" : "exclude",
+      windowAudio: r.audio ? "window" : "exclude",
+      selfBrowserSurface: "exclude",
+      surfaceSwitching: "include",
+      monitorTypeSurfaces: "include",
+    });
   } catch (e) {
     if (e?.name !== "NotAllowedError") {
       console.error(e);
-      toast("Não foi possível transmitir a tela");
+      toast("Não foi possível capturar a tela");
     }
+    return;
+  }
+  const [videoTrack] = stream.getVideoTracks();
+  const [audioTrack] = stream.getAudioTracks();
+  videoTrack.contentHint = r.hint;
+  // "Parar de compartilhar" na barra do navegador: encerra vídeo e áudio juntos.
+  videoTrack.addEventListener("ended", () => stopScreenShare());
+  if (audioTrack) audioTrack.contentHint = "music";
+  const cap = videoTrack.getSettings();
+  const capW = cap.width ?? width;
+  const capH = cap.height ?? height;
+
+  const codec = await pickCodec(capW, capH, fps, maxBitrate);
+  // VP9 e AV1 usam camadas SVC; H.264 usa simulcast com uma camada 720p extra para conexões
+  // fracas, na mesma taxa de quadros (fluidez primeiro).
+  const svc = codec === "vp9" || codec === "av1";
+  const lowRate = fps > 30 ? 2_500_000 : 1_500_000;
+  try {
+    await lp.publishTrack(videoTrack, {
+      source: SRC.ScreenShare,
+      videoCodec: codec,
+      screenShareEncoding: { maxBitrate, maxFramerate: fps, priority: "high" },
+      simulcast: !svc && Math.max(capW, capH) > 1280,
+      screenShareSimulcastLayers: svc ? undefined : [new LK.VideoPreset(1280, 720, lowRate, fps)],
+      scalabilityMode: svc ? "L3T3_KEY" : undefined,
+      degradationPreference: r.hint === "motion" ? "maintain-framerate" : "maintain-resolution",
+    });
+    if (audioTrack) {
+      await lp.publishTrack(audioTrack, {
+        source: SRC.ScreenShareAudio,
+        // Música e jogos: estéreo, 128 kbps e sem DTX (o DTX corta trechos baixos; é feito para voz).
+        audioPreset: { maxBitrate: 128_000 },
+        dtx: false,
+        red: false,
+        forceStereo: true,
+      });
+    }
+  } catch (e) {
+    console.error(e);
+    stream.getTracks().forEach((t) => t.stop());
+    await stopScreenShare();
+    toast("Não foi possível transmitir a tela");
+    return;
+  }
+  if (r.audio && !audioTrack) toast(noShareAudioHint(cap.displaySurface));
+  syncVoiceState();
+  renderVoiceAll();
+}
+
+async function stopScreenShare() {
+  const lp = voice.room?.localParticipant;
+  for (const src of [SRC.ScreenShare, SRC.ScreenShareAudio]) {
+    const pub = lp?.getTrackPublication(src);
+    if (pub?.track) await lp.unpublishTrack(pub.track, true).catch(() => {});
   }
   syncVoiceState();
   renderVoiceAll();
+}
+
+/** O navegador não entregou áudio: explica o que marcar na janela de escolha. */
+function noShareAudioHint(surface) {
+  if (surface === "browser") return "Transmitindo sem áudio. Para incluir o som, escolha a aba de novo e deixe marcado “Compartilhar áudio da guia”.";
+  if (surface === "monitor") return "Transmitindo sem áudio. Para incluir o som, escolha a tela de novo e marque “Também compartilhar o áudio do sistema”.";
+  return "Transmitindo sem áudio: este navegador não captura o som de uma janela. Para ter som, transmita a Tela inteira (marcando o áudio do sistema) ou uma aba.";
 }
 
 // ---------- estatísticas reais (resolução, fps e taxa de bits efetivos) ----------
@@ -478,6 +572,8 @@ async function updateStats() {
         if (mbps != null) text += ` · ${mbps.toFixed(1)} Mbps`;
         const lim = best.qualityLimitationReason;
         if (lim && lim !== "none") text += ` · limitado pelo(a) ${LIMITS[lim] ?? lim}`;
+        const enc = await encoderInfo(screenTrack);
+        if (enc) text += ` · ${enc}`;
         box.textContent = text;
         box.classList.remove("hidden");
       }
@@ -500,6 +596,23 @@ async function updateStats() {
       if (mbps != null) text += ` · ${mbps.toFixed(1)} Mbps`;
       e.textContent = text;
     } catch {}
+  }
+}
+
+/** "H264 · GPU" ou "VP9 · CPU": ajuda a entender quedas de fps no envio. */
+async function encoderInfo(track) {
+  try {
+    const report = await track.sender?.getStats();
+    let best = null;
+    report?.forEach((r) => {
+      if (r.type === "outbound-rtp" && r.kind === "video" && (!best || (r.frameWidth ?? 0) > (best.frameWidth ?? 0))) best = r;
+    });
+    if (!best) return null;
+    const codec = report.get(best.codecId)?.mimeType?.split("/")[1];
+    const hw = best.powerEfficientEncoder;
+    return [codec, hw === true ? "GPU" : hw === false ? "CPU" : null].filter(Boolean).join(" · ") || null;
+  } catch {
+    return null;
   }
 }
 
@@ -810,8 +923,28 @@ function renderVoiceView() {
   }
   view.append(stage);
   view.append(callBar());
+  applyVideoQualities(tiles, focused);
   updateSpeaking();
   renderVoiceControls();
+}
+
+/**
+ * Transmissões de tela: sempre a qualidade original (como no Discord). Câmeras: alta em destaque,
+ * média na grade e baixa na faixa lateral ou com muita gente.
+ */
+function applyVideoQualities(tiles, focused) {
+  const Q = LK.VideoQuality;
+  for (const t of tiles) {
+    if (t.local) continue;
+    const p = voice.room?.getParticipantByIdentity(t.identity);
+    const pub = p?.getTrackPublication(t.kind === "screen" ? SRC.ScreenShare : SRC.Camera);
+    if (!pub?.isSubscribed) continue;
+    let q;
+    if (t.kind === "screen") q = Q.HIGH;
+    else if (focused) q = t === focused ? Q.HIGH : Q.LOW;
+    else q = tiles.length > 6 ? Q.LOW : Q.MEDIUM;
+    pub.setVideoQuality(q);
+  }
 }
 
 // ---------- barra de controles da chamada (essencial no celular) ----------

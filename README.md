@@ -141,7 +141,11 @@ art. 33), que precisa constar na política.
 - Volume individual de cada pessoa (até 200%)
 - **Transmissão de tela** em 720p30, 1080p30, **1080p60**, 1440p60, 4K30 e 4K60, com:
   - otimização para fluidez (jogos) ou nitidez (texto);
-  - áudio da aba ou do sistema;
+  - áudio da aba, da tela inteira ou (no Chrome recente) da janela, em estéreo e sem o filtro de voz.
+    No Windows, para ter som ao transmitir a tela inteira, marque "Também compartilhar o áudio do
+    sistema"; se o navegador não entregar áudio, o Concord avisa o que marcar;
+  - codec automático, que escolhe um com aceleração na GPU (as estatísticas mostram "GPU" ou "CPU");
+  - quem assiste recebe a qualidade original, mesmo com o vídeo num bloco pequeno;
   - codec H.264, VP9 ou AV1;
   - camadas de qualidade (simulcast ou SVC).
 
