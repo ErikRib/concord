@@ -285,6 +285,29 @@ let attUrl;
   const g6 = await beginUpload(B, ch, heic.length);
   check((await post(g6, heic, "foto.heic")).status === 415, "foto HEIC (que guarda GPS) é recusada com orientação");
 
+  // GIF colado: o servidor busca o original, mas nunca na rede interna (SSRF).
+  await sleep(3400);
+  const fromUrl = async (url) => {
+    const rid = Math.random().toString(36).slice(2);
+    B.send({ type: "upload_from_url", channel_id: ch, url, request_id: rid });
+    return B.wait((m) => m.type === "url_upload" && m.request_id === rid, 30000);
+  };
+  for (const bad of ["https://127.0.0.1/a.gif", "https://169.254.169.254/latest/meta-data/", "https://10.0.0.1/a.gif",
+    "https://[::1]/a.gif", "https://localhost/a.gif", "http://upload.wikimedia.org/a.gif", "file:///etc/passwd"]) {
+    const r = await fromUrl(bad);
+    check(!r.ok && !r.id, `busca de GIF recusa endereço interno ou inseguro: ${bad}`);
+  }
+  const gifUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif";
+  const remote = await fromUrl(gifUrl);
+  if (!remote.ok && /buscar/.test(remote.error ?? "")) {
+    console.log("AVISO sem acesso à internet; busca de GIF real pulada");
+  } else {
+    check(remote.ok && remote.mime === "image/gif" && remote.width > 0 && remote.name.endsWith(".gif"),
+      `GIF colado vira o GIF original (${remote.name}, ${remote.size} bytes)`);
+  }
+  const notImage = await fromUrl("https://upload.wikimedia.org/wikipedia/commons/");
+  check(!notImage.ok, "endereço que não é imagem é recusado");
+
   A.send({ type: "send_message", channel_id: ch, content: "roubando", attachments: [upJ.id] });
   check((await A.error()).includes("Arquivo inválido"), "não dá para anexar o arquivo enviado por outra pessoa");
   B.send({ type: "send_message", channel_id: ch, content: "", attachments: [upJ.id, j3.id, j4.id, j5.id] });
@@ -321,7 +344,7 @@ let attUrl;
   check(h.messages.some((m) => m.attachments[0]?.id === upJ.id && m.attachments[0].url.includes("sig=")), "histórico traz imagens com link assinado");
   B.send({ type: "export_my_data" });
   const bExp = (await B.wait(type("my_data"))).data;
-  check(bExp.reacoes.some((r) => r.emoji === "👍") && bExp.arquivos.length === 4 && bExp.mensagens.some((m) => m.resposta_a),
+  check(bExp.reacoes.some((r) => r.emoji === "👍") && bExp.arquivos.length >= 4 && bExp.mensagens.some((m) => m.resposta_a),
     "exportação traz reações, arquivos e respostas");
 }
 

@@ -16,6 +16,8 @@ hmac = "0.12"
 base64 = "0.22"
 # SQLite embutido no executável (compilado junto, sem instalação separada).
 rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
+# Busca do GIF original quando a pessoa cola um GIF (HTTPS com rustls, sem OpenSSL).
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Job Object: o Windows encerra o LiveKit junto com o Concord, mesmo numa queda.

@@ -1,6 +1,7 @@
 mod bench;
 mod commands;
 mod db;
+mod fetch;
 mod legacy;
 mod media;
 mod model;

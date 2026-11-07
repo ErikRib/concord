@@ -442,13 +442,77 @@ $("#file-input").onchange = (e) => {
   addFiles([...e.target.files]);
   e.target.value = "";
 };
+/** Endereço da imagem copiada de uma página (o HTML da área de transferência traz o <img>). */
+function copiedImageUrl(html) {
+  if (!html || !html.includes("<img")) return null;
+  // DOMParser cria um documento inerte: nada é carregado nem executado.
+  const img = new DOMParser().parseFromString(html, "text/html").querySelector("img[src]");
+  const src = img?.getAttribute("src") ?? "";
+  return /^https:\/\//i.test(src) ? src : null;
+}
+
 input.addEventListener("paste", (e) => {
   const files = [...(e.clipboardData?.files ?? [])];
+  const url = copiedImageUrl(e.clipboardData?.getData("text/html"));
+  // Imagem copiada de um site: o navegador só entrega um PNG parado (o 1º quadro do GIF).
+  // O servidor busca o original pelo endereço; se não der, vai o PNG mesmo.
+  if (url && files.length <= 1 && (files.length === 0 || files[0].type.startsWith("image/"))) {
+    e.preventDefault();
+    addFromUrl(url, files[0] ?? null);
+    return;
+  }
   if (files.length) {
     e.preventDefault();
     addFiles(files);
   }
 });
+
+const urlWaiters = new Map(); // request_id -> resolve
+
+function onUrlUpload(m) {
+  urlWaiters.get(m.request_id)?.(m);
+  urlWaiters.delete(m.request_id);
+}
+
+async function addFromUrl(url, fallback) {
+  if (!state.channelId || currentChannel()?.kind === "voice") return;
+  if (composer.uploads.length >= MAX_FILES) return toast(`No máximo ${MAX_FILES} arquivos por mensagem`);
+  const name = decodeURIComponent(url.split(/[?#]/)[0].split("/").pop() || "imagem").slice(0, 60);
+  const item = {
+    key: Math.random().toString(36).slice(2),
+    file: { name, type: "image/gif", size: 0 },
+    blob: null,
+    url: fallback ? URL.createObjectURL(fallback) : "",
+    status: "uploading",
+    id: null,
+  };
+  composer.uploads.push(item);
+  renderUploads();
+  const requestId = Math.random().toString(36).slice(2);
+  const result = await new Promise((resolve) => {
+    urlWaiters.set(requestId, resolve);
+    send({ type: "upload_from_url", channel_id: state.channelId, url, request_id: requestId });
+    setTimeout(() => { if (urlWaiters.delete(requestId)) resolve({ ok: false }); }, 25000);
+  });
+  if (!composer.uploads.includes(item)) return; // removido enquanto buscava
+  if (result.ok) {
+    item.id = result.id;
+    item.file = { name: result.name, type: result.mime, size: result.size };
+    item.status = "ready";
+    renderUploads();
+    return;
+  }
+  // Sem o original: usa o que o navegador colou (ou avisa).
+  URL.revokeObjectURL(item.url);
+  composer.uploads = composer.uploads.filter((x) => x !== item);
+  renderUploads();
+  if (fallback) {
+    addFiles([fallback]);
+    if (/\.gif(\?|$)/i.test(url)) toast("Não deu para buscar o GIF original; foi só o primeiro quadro. Para manter a animação, salve o GIF e arraste o arquivo.");
+  } else {
+    toast(result.error || "Não foi possível buscar a imagem colada");
+  }
+}
 $("#text-view").addEventListener("dragover", (e) => {
   if ([...(e.dataTransfer?.types ?? [])].includes("Files")) {
     e.preventDefault();

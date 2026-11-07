@@ -76,10 +76,16 @@ ul { list-style: none; margin: 0; padding: 0; }
 #app {
   display: grid;
   grid-template-columns: 72px 248px 1fr 248px;
+  /* Uma linha do tamanho exato da tela: o conteúdo rola por dentro de cada coluna e a
+     página inteira nunca rola (antes, imagens altas esticavam a linha além da tela). */
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
+  overflow: hidden;
   background: var(--bg-base);
 }
+#app > * { min-height: 0; }
+html, body { overflow: hidden; overscroll-behavior: none; }
 
 /* ---------- botões ---------- */
 .btn {

@@ -20,7 +20,7 @@ use crate::state::{
 use crate::ws::Out;
 
 pub struct Ctx<'a> {
-    pub state: &'a AppState,
+    pub state: &'a std::sync::Arc<AppState>,
     pub me: &'a mut User,
     pub conn_id: Uuid,
     pub out: &'a Out,
@@ -999,6 +999,65 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
             });
         }
 
+        // GIF colado: o servidor busca o original pelo endereço (veja src/fetch.rs).
+        ClientMsg::UploadFromUrl {
+            channel_id,
+            url,
+            request_id,
+        } => {
+            let request_id: String = request_id.chars().take(40).collect();
+            {
+                let cache = st.cache.lock().unwrap();
+                let i = cache
+                    .server_index_of_channel(channel_id)
+                    .ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
+                if !s.can_view(uid) {
+                    return no_permission();
+                }
+                if s.channels
+                    .iter()
+                    .any(|c| c.id == channel_id && c.kind == ChannelKind::Voice)
+                {
+                    return Err("Canais de voz não têm chat de texto".into());
+                }
+            }
+            if st.read(|c| db::count_pending_attachments(c, uid))? >= MAX_PENDING_UPLOADS {
+                return Err(
+                    "Muitos arquivos aguardando envio; envie a mensagem ou espere um pouco".into(),
+                );
+            }
+            let st = st.clone();
+            let out = cx.out.clone();
+            tokio::spawn(async move {
+                let msg = match fetch_url_image(&st, uid, channel_id, url).await {
+                    Ok((id, name, mime, size, width, height)) => ServerMsg::UrlUpload {
+                        request_id,
+                        ok: true,
+                        id: Some(id),
+                        name,
+                        mime,
+                        size,
+                        width,
+                        height,
+                        error: None,
+                    },
+                    Err(e) => ServerMsg::UrlUpload {
+                        request_id,
+                        ok: false,
+                        id: None,
+                        name: String::new(),
+                        mime: String::new(),
+                        size: 0,
+                        width: 0,
+                        height: 0,
+                        error: Some(e.to_string()),
+                    },
+                };
+                let _ = out.send(msg);
+            });
+        }
+
         // ---------- Soundpad ----------
         ClientMsg::FetchSounds { server_id } => {
             let can_manage = {
@@ -1329,6 +1388,96 @@ fn check_can_act_on(st: &AppState, s: &Server, actor: Uuid, admin: bool, target:
 }
 
 const MAX_ATTACHMENTS: usize = 10;
+
+/// "%28large%29" -> "(large)" (só para o nome exibido; o resultado ainda é filtrado).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Busca, confere que é imagem, limpa metadados e guarda como anexo pendente.
+async fn fetch_url_image(
+    st: &std::sync::Arc<AppState>,
+    uid: Uuid,
+    channel_id: Uuid,
+    url: String,
+) -> Result<(Uuid, String, String, usize, u32, u32), &'static str> {
+    let raw_name = url
+        .split(['?', '#'])
+        .next()
+        .and_then(|u| u.rsplit('/').next())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("imagem");
+    let name = percent_decode(raw_name)
+        .chars()
+        .take(60)
+        .collect::<String>();
+    let clean = tokio::task::spawn_blocking(move || {
+        let data = crate::fetch::fetch(&url)?;
+        crate::media::sanitize(&data).map_err(|_| "O endereço não é de uma imagem")
+    })
+    .await
+    .map_err(|_| "Erro ao buscar a imagem")??;
+    let id = Uuid::new_v4();
+    let stem = name
+        .rsplit_once('.')
+        .map(|(s, _)| s.to_string())
+        .unwrap_or(name);
+    let ext = match clean.kind {
+        crate::media::Kind::Png => "png",
+        crate::media::Kind::Jpeg => "jpg",
+        crate::media::Kind::Gif => "gif",
+        crate::media::Kind::Webp => "webp",
+    };
+    let stem: String = stem
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '(' | ')'))
+        .collect();
+    let filename = format!(
+        "{}.{ext}",
+        if stem.trim().is_empty() {
+            "imagem"
+        } else {
+            stem.trim()
+        }
+    );
+    let mime = clean.mime().to_string();
+    let size = clean.data.len();
+    let (w, h) = (clean.width, clean.height);
+    st.mutate(|_, tx| {
+        db::insert_attachment(
+            tx,
+            &db::NewAttachment {
+                id,
+                channel_id,
+                uploader_id: uid,
+                filename: &filename,
+                mime: &mime,
+                width: w,
+                height: h,
+                data: &clean.data,
+                created_at: now_ms(),
+            },
+        )?;
+        Ok(())
+    })
+    .map_err(|_| "Erro ao guardar a imagem")?;
+    Ok((id, filename, mime, size, w, h))
+}
 const MAX_REACTION_EMOJIS: usize = 20;
 
 /// Reação: um emoji (pode ter modificadores de tom, ZWJ e seletores de variação).
@@ -1418,5 +1567,8 @@ mod tests {
         assert_eq!(clean_name("\u{0007}  "), "Anônimo");
         assert_eq!(clean_color("red"), "#5865f2");
         assert!(valid_server_name("   ").is_err());
+        assert_eq!(percent_decode("Earth_%28large%29.gif"), "Earth_(large).gif");
+        assert_eq!(percent_decode("caf%C3%A9%"), "café%");
+        assert_eq!(percent_decode("%zz%é"), "%zz%é");
     }
 }

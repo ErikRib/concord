@@ -454,6 +454,12 @@ pub enum ClientMsg {
         channel_id: Uuid,
         size: u64,
     },
+    /// GIF colado: o servidor busca a imagem original no endereço (https).
+    UploadFromUrl {
+        channel_id: Uuid,
+        url: String,
+        request_id: String,
+    },
     /// Autorização para POST /sons/{upload_id} (moderação do servidor).
     SoundUploadBegin {
         server_id: Uuid,
@@ -557,6 +563,18 @@ pub enum ServerMsg {
         max_bytes: u64,
         /// "image" ou "sound".
         kind: &'static str,
+    },
+    /// Resultado de `UploadFromUrl`: o anexo pendente já está guardado.
+    UrlUpload {
+        request_id: String,
+        ok: bool,
+        id: Option<Uuid>,
+        name: String,
+        mime: String,
+        size: usize,
+        width: u32,
+        height: u32,
+        error: Option<String>,
     },
     Sounds {
         server_id: Uuid,

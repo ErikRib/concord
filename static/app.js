@@ -638,6 +638,10 @@ function handle(m) {
       else onUploadToken(m);
       break;
 
+    case "url_upload":
+      onUrlUpload(m);
+      break;
+
     case "sounds":
       onSounds(m);
       break;
