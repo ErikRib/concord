@@ -616,6 +616,7 @@ function addSoundDialog(serverId) {
   trim.append(el("label", "field-label", "Trecho"), startRange, trimLabel);
   const clipLen = () => (decoded ? Math.min(MAX_SOUND_SECONDS, decoded.duration - Number(startRange.value)) : 0);
   const updateTrim = () => {
+    paintRange(startRange);
     const s = Number(startRange.value);
     trimLabel.textContent = `De ${s.toFixed(1)} s a ${(s + clipLen()).toFixed(1)} s (de ${decoded.duration.toFixed(1)} s)`;
   };

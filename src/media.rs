@@ -1,8 +1,9 @@
-//! Imagens enviadas no chat: identifica o formato pelo conteúdo (não pela
-//! extensão), lê as dimensões e **remove metadados** (EXIF com GPS, XMP, IPTC,
-//! comentários). LGPD: fotos de celular costumam trazer a localização exata.
-//! O navegador já recodifica a imagem antes do envio; esta limpeza vale também
-//! contra clientes modificados.
+//! Arquivos enviados no chat: identifica o formato pelo conteúdo (não pela
+//! extensão). Imagens: lê as dimensões e **remove metadados** (EXIF com GPS, XMP,
+//! IPTC, comentários). Vídeos MP4/MOV: neutraliza os blocos de metadados (onde o
+//! celular grava a localização) e zera as datas de gravação. LGPD: fotos e vídeos
+//! de celular costumam trazer a localização exata. O navegador já recodifica as
+//! imagens antes do envio; esta limpeza vale também contra clientes modificados.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -37,12 +38,31 @@ pub fn detect(b: &[u8]) -> Option<Kind> {
     }
 }
 
-/// Imagem limpa, pronta para guardar.
+/// Arquivo pronto para guardar. `kind` só existe para imagens.
 pub struct Clean {
     pub kind: Kind,
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub other_mime: Option<&'static str>,
+}
+
+impl Clean {
+    pub fn file(data: Vec<u8>, mime: &'static str) -> Self {
+        Clean {
+            kind: Kind::Png,
+            data,
+            width: 0,
+            height: 0,
+            other_mime: Some(mime),
+        }
+    }
+    pub fn mime(&self) -> &'static str {
+        self.other_mime.unwrap_or_else(|| self.kind.mime())
+    }
+    pub fn image_kind(&self) -> Option<Kind> {
+        self.other_mime.is_none().then_some(self.kind)
+    }
 }
 
 /// Identifica, remove metadados e lê as dimensões. Recusa arquivos malformados.
@@ -65,6 +85,7 @@ pub fn sanitize(input: &[u8]) -> Result<Clean, &'static str> {
         data,
         width,
         height,
+        other_mime: None,
     })
 }
 
@@ -163,8 +184,14 @@ fn strip_gif(b: &[u8]) -> Option<Vec<u8>> {
             }
         }
     };
+    let mut frames = 0usize;
     loop {
-        match *b.get(i)? {
+        let Some(&byte) = b.get(i) else {
+            // Terminou sem o byte final: aceita se já houver ao menos um quadro.
+            out.push(0x3B);
+            return (frames > 0).then_some(out);
+        };
+        match byte {
             0x3B => {
                 out.push(0x3B);
                 return Some(out);
@@ -193,9 +220,19 @@ fn strip_gif(b: &[u8]) -> Option<Vec<u8>> {
                     j += 3 * (1usize << ((f & 0x07) + 1));
                 }
                 j += 1; // tamanho mínimo do código LZW
-                let end = sub_blocks_end(j)?;
-                out.extend_from_slice(b.get(i..end)?);
+                let Some(end) = sub_blocks_end(j).filter(|&e| e <= b.len()) else {
+                    // Último quadro cortado: fica com os quadros completos.
+                    out.push(0x3B);
+                    return (frames > 0).then_some(out);
+                };
+                out.extend_from_slice(&b[i..end]);
+                frames += 1;
                 i = end;
+            }
+            // Lixo depois dos quadros (preenchimento): encerra ali.
+            _ if frames > 0 => {
+                out.push(0x3B);
+                return Some(out);
             }
             _ => return None,
         }
@@ -265,6 +302,118 @@ pub fn dimensions(kind: Kind, b: &[u8]) -> Option<(u32, u32)> {
                 _ => None,
             }
         }
+    }
+}
+
+// ---------- outros arquivos (vídeo, áudio, documentos...) ----------
+
+/// Tamanho máximo de um arquivo do chat.
+pub const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Resultado do preparo de um arquivo enviado.
+pub enum Prepared {
+    Image(Clean),
+    /// Qualquer outro arquivo. `mime` vem do conteúdo, nunca do que o navegador disse.
+    File {
+        data: Vec<u8>,
+        mime: &'static str,
+    },
+}
+
+/// Identifica o arquivo pelo conteúdo e limpa o que for possível.
+pub fn prepare(input: &[u8]) -> Result<Prepared, &'static str> {
+    if detect(input).is_some() {
+        return sanitize(input).map(Prepared::Image);
+    }
+    let b = input;
+    if b.len() >= 12 && &b[4..8] == b"ftyp" {
+        let brand = &b[8..12];
+        // Fotos HEIC/AVIF guardam EXIF com GPS e o navegador nem sempre as converte:
+        // em vez de repassar a localização, pede outro formato.
+        if matches!(
+            brand,
+            b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1" | b"avif" | b"avis"
+        ) {
+            return Err("Foto em HEIC/AVIF: envie em JPEG ou PNG (no iPhone: Ajustes › Câmera › Formatos › Mais Compatível)");
+        }
+        let mut data = input.to_vec();
+        strip_isobmff(&mut data);
+        let mime = if matches!(brand, b"M4A " | b"M4B " | b"M4P ") {
+            "audio/mp4"
+        } else {
+            "video/mp4"
+        };
+        return Ok(Prepared::File { data, mime });
+    }
+    let mime = if b.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        "video/webm"
+    } else if b.starts_with(b"OggS") {
+        "audio/ogg"
+    } else if b.starts_with(b"ID3") || (b.len() > 1 && b[0] == 0xFF && b[1] & 0xE0 == 0xE0) {
+        "audio/mpeg"
+    } else if b.starts_with(b"fLaC") {
+        "audio/flac"
+    } else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WAVE" {
+        "audio/wav"
+    } else if b.starts_with(b"%PDF-") {
+        "application/pdf"
+    } else {
+        "application/octet-stream"
+    };
+    Ok(Prepared::File {
+        data: input.to_vec(),
+        mime,
+    })
+}
+
+/// MP4/MOV: troca os blocos de metadados por `free` zerados (mesmo tamanho, então nenhum
+/// deslocamento muda e o vídeo continua tocando) e zera as datas de criação/modificação.
+/// É onde ficam a localização (©xyz, com.apple.quicktime.location), o modelo do aparelho e o
+/// software. O conteúdo de áudio e vídeo não é tocado.
+pub fn strip_isobmff(buf: &mut [u8]) {
+    walk_boxes(buf, 0, buf.len(), 0);
+}
+
+fn walk_boxes(b: &mut [u8], start: usize, end: usize, depth: u8) {
+    let mut i = start;
+    while i + 8 <= end && depth < 10 {
+        let mut size = u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+        let mut header = 8;
+        if size == 1 {
+            if i + 16 > end {
+                return;
+            }
+            size = u64::from_be_bytes(b[i + 8..i + 16].try_into().unwrap()) as usize;
+            header = 16;
+        } else if size == 0 {
+            size = end - i;
+        }
+        if size < header || size > end - i {
+            return;
+        }
+        let kind: [u8; 4] = b[i + 4..i + 8].try_into().unwrap();
+        match &kind {
+            b"udta" | b"meta" | b"uuid" | b"XMP_" => {
+                // Vira um bloco vazio do mesmo tamanho: o tipo muda e o conteúdo é zerado.
+                b[i + 4..i + 8].copy_from_slice(b"free");
+                b[i + header..i + size].fill(0);
+            }
+            b"moov" | b"trak" | b"mdia" | b"minf" | b"edts" => {
+                walk_boxes(b, i + header, i + size, depth + 1)
+            }
+            b"mvhd" | b"tkhd" | b"mdhd" => zero_box_times(b, i + header, i + size),
+            _ => {}
+        }
+        i += size;
+    }
+}
+
+/// Caixas "full box": versão 0 tem datas de 32 bits; versão 1, de 64 bits.
+fn zero_box_times(b: &mut [u8], start: usize, end: usize) {
+    let Some(&version) = b.get(start) else { return };
+    let len = if version == 1 { 16 } else { 8 };
+    if start + 4 + len <= end {
+        b[start + 4..start + 4 + len].fill(0);
     }
 }
 
@@ -468,20 +617,67 @@ mod tests {
     }
 
     fn wav(extra: &[u8], samples: usize, rate: u32) -> Vec<u8> {
-        let mut v = b"RIFF    WAVE".to_vec();
+        let mut v = b"RIFF\0\0\0\0WAVE".to_vec();
         v.extend_from_slice(extra);
-        v.extend_from_slice(b"fmt      ");
+        v.extend_from_slice(b"fmt \0\0\0\0\0");
         v.extend_from_slice(&rate.to_le_bytes());
         v.extend_from_slice(&(rate * 2).to_le_bytes());
-        v.extend_from_slice(b"  data");
+        v.extend_from_slice(b"\0\0data");
         v.extend_from_slice(&((samples * 2) as u32).to_le_bytes());
         v.extend(std::iter::repeat_n(7u8, samples * 2));
         v
     }
 
     #[test]
+    fn gif_sem_byte_final_e_aceito() {
+        let mut gif = b"GIF89a\x01\0\x01\0\x80\0\0\xff\xff\xff\0\0\0".to_vec();
+        gif.extend_from_slice(b",\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0");
+        let clean = sanitize(&gif).expect("GIF sem 0x3B");
+        assert_eq!(*clean.data.last().unwrap(), 0x3B);
+        let mut padded = gif.clone();
+        padded.extend_from_slice(&[0x3B, 0, 0, 0]);
+        assert!(sanitize(&padded).is_ok());
+        let mut junk = gif.clone();
+        junk.extend_from_slice(&[0, 0, 0]);
+        assert!(sanitize(&junk).is_ok());
+    }
+
+    #[test]
+    fn mp4_perde_localizacao_e_datas() {
+        let bx = |kind: &[u8], body: &[u8]| {
+            let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(kind);
+            v.extend_from_slice(body);
+            v
+        };
+        let mut mvhd = vec![0u8; 100];
+        mvhd[4..12].copy_from_slice(&[0xAA; 8]);
+        let udta = bx(b"udta", &bx(b"\xa9xyz", b"+23.5-046.6/"));
+        let mut moov_body = bx(b"mvhd", &mvhd);
+        moov_body.extend(udta);
+        let mut file = bx(b"ftyp", b"isom\0\0\0\0isommp41");
+        file.extend(bx(b"moov", &moov_body));
+        file.extend(bx(b"mdat", b"dados"));
+        let Prepared::File { data, mime } = prepare(&file).unwrap() else {
+            panic!()
+        };
+        assert_eq!(mime, "video/mp4");
+        assert_eq!(data.len(), file.len());
+        assert!(!data.windows(4).any(|w| w == b"udta"));
+        assert!(!data.windows(4).any(|w| w == [0xAA; 4]));
+        assert!(!data.windows(8).any(|w| w == b"+23.5-04"));
+        assert!(data.windows(5).any(|w| w == b"dados"));
+        let heic = bx(b"ftyp", b"heic\0\0\0\0mif1heic");
+        assert!(prepare(&heic).is_err());
+        let Prepared::File { mime, .. } = prepare(b"<html>oi").unwrap() else {
+            panic!()
+        };
+        assert_eq!(mime, "application/octet-stream");
+    }
+
+    #[test]
     fn wav_metadata_removed_and_duration_checked() {
-        let list = b"LIST   INFOIART    ";
+        let list = b"LIST\0\0\0INFOIART\0\0\0\0";
         let clean = sanitize_wav(&wav(list, 48_000, 48_000)).unwrap();
         assert_eq!(clean.duration_ms, 1000);
         assert!(!clean.data.windows(4).any(|w| w == b"LIST"));

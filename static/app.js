@@ -296,6 +296,12 @@ const ICONS = {
   reply: "M9 17l-5-5 5-5M20 18v-2a4 4 0 0 0-4-4H4",
   more: "M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   image: "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM21 15l-5-5L5 21",
+  file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5",
+  film: "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4",
+  archive: "M21 8v13H3V8M1 3h22v5H1zM10 12h4",
+  alert: "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
+  volumeOff: "M11 5 6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
 };
 
 function icon(name, cls = "mi-icon") {
@@ -315,8 +321,69 @@ function icon(name, cls = "mi-icon") {
   return svg;
 }
 
+/**
+ * Barra de volume (0 a `max`%), com botão de mudo e valor ao lado. Aplica enquanto arrasta.
+ * Cliques dentro dela não fecham menus nem acionam o bloco de vídeo em volta.
+ */
+function volumeSlider(value, onInput, { max = 200, compact = false } = {}) {
+  const wrap = el("div", compact ? "vol-slider compact" : "vol-slider");
+  const mute = el("button", "vol-mute");
+  mute.type = "button";
+  const range = el("input");
+  range.type = "range";
+  range.min = "0";
+  range.max = String(max);
+  range.step = "1";
+  range.value = String(Math.round(value * 100));
+  range.setAttribute("aria-label", "Volume");
+  const label = el("span", "vol-val");
+  let lastAudible = value > 0 ? value : 1;
+  const paint = () => {
+    const v = Number(range.value);
+    label.textContent = `${v}%`;
+    range.style.setProperty("--fill", `${(v / max) * 100}%`);
+    mute.replaceChildren(icon(v === 0 ? "volumeOff" : "volume", "vol-icon"));
+    mute.title = v === 0 ? "Ativar som" : "Silenciar";
+    mute.setAttribute("aria-label", mute.title);
+  };
+  range.oninput = () => {
+    const v = Number(range.value) / 100;
+    if (v > 0) lastAudible = v;
+    paint();
+    onInput(v);
+  };
+  mute.onclick = () => {
+    range.value = String(Number(range.value) === 0 ? Math.round(lastAudible * 100) : 0);
+    range.oninput();
+  };
+  for (const ev of ["click", "pointerdown", "mousedown", "dblclick", "touchstart"]) {
+    wrap.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+  }
+  wrap.append(mute, range, label);
+  paint();
+  return wrap;
+}
+
+/** Pinta a parte preenchida de qualquer controle deslizante (o CSS usa --fill). */
+function paintRange(r) {
+  const min = Number(r.min) || 0;
+  const max = Number(r.max) || 100;
+  r.style.setProperty("--fill", `${((Number(r.value) - min) / (max - min || 1)) * 100}%`);
+}
+document.addEventListener("input", (e) => { if (e.target.type === "range") paintRange(e.target); });
+new MutationObserver((list) => {
+  for (const m of list) {
+    for (const n of m.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      if (n.matches?.("input[type=range]")) paintRange(n);
+      n.querySelectorAll?.("input[type=range]").forEach(paintRange);
+    }
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+
 // ---------- menu de contexto ----------
 // Item: { label, icon?, danger?, checked? (caixinha à direita), onClick }. "-" = divisória.
+// Item com barra: { slider: { label, value (0 a 2), onInput } }.
 let openMenu = null;
 function closeMenu() {
   openMenu?.remove();
@@ -336,6 +403,13 @@ function showMenu(event, items) {
   for (const it of list) {
     if (it === "-") {
       menu.append(el("div", "menu-sep"));
+      continue;
+    }
+    if (it.slider) {
+      const row = el("div", "menu-slider");
+      row.append(el("div", "menu-slider-label", it.slider.label), volumeSlider(it.slider.value, it.slider.onInput));
+      row.onclick = (ev) => ev.stopPropagation();
+      menu.append(row);
       continue;
     }
     const b = el("button", it.danger ? "menu-item danger" : "menu-item");
@@ -1230,7 +1304,11 @@ function userMenu(e, user) {
   const canAct = !isMe && s.can_moderate && role !== "owner" && (role !== "mod" || s.can_manage);
   showMenu(e, [
     isMe && { label: "Minha conta", icon: "user", onClick: () => openSettings("user", "account") },
-    inMyCall && { label: `Volume (${Math.round((vset.volumes[user.id] ?? 1) * 100)}%)`, icon: "volume", onClick: () => setUserVolume(user) },
+    inMyCall && { slider: { label: "Volume do usuário", value: vset.volumes[user.id] ?? 1, onInput: (v) => setUserVolume(user.id, v) } },
+    inMyCall && voice.watching.has(user.id) && {
+      slider: { label: "Volume da transmissão", value: vset.streamVolumes[user.id] ?? 1, onInput: (v) => setStreamVolume(user.id, v) },
+    },
+    inMyCall && "-",
     !isMe && s.can_manage && role !== "owner" && {
       label: "Moderador(a)",
       icon: "star",

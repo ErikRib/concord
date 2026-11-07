@@ -57,7 +57,7 @@ async function person(ctx, secret, name) {
   page.on("pageerror", (e) => console.log(`[${name}] erro na página: ${e.message}`));
   await page.evaluateOnNewDocument((secret, name) => {
     try {
-      localStorage.setItem("concord.identity", JSON.stringify({ secret, name, color: "#3ba55c", consent: 5 }));
+      localStorage.setItem("concord.identity", JSON.stringify({ secret, name, color: "#3ba55c", consent: 6 }));
     } catch {}
   }, secret, name);
   await page.goto(BASE);
@@ -149,7 +149,7 @@ check(true, "Ana começou a transmitir a tela");
 
 // Bia vê o "AO VIVO" e clica em assistir.
 await B.waitForFunction(() => document.querySelector(".tile.screen .primary-btn"), { timeout: 10000 });
-await B.click(".tile.screen .primary-btn");
+await B.evaluate(() => document.querySelector(".tile.screen .primary-btn").click()); // clique atômico (a chamada redesenha os blocos)
 for (let k = 1; k <= 6; k++) {
   await sleep(5000);
   const srcFps = await target.evaluate(() => window.fps);
@@ -243,8 +243,13 @@ await A.evaluate((id) => {
 }, bobId);
 await sleep(2500);
 await B.evaluate(() => applyMic());
-await sleep(2000);
-check(!(await micOfBia()).muted, "remover o silêncio devolve o microfone da Bia");
+// A volta passa pelo LiveKit (permissão + nova publicação): espera até 10 s, sem tempo fixo.
+let micBack = false;
+for (let k = 0; k < 20 && !micBack; k++) {
+  await sleep(500);
+  micBack = !(await micOfBia()).muted;
+}
+check(micBack, "remover o silêncio devolve o microfone da Bia");
 
 // Desconectar: o LiveKit derruba a sessão da Bia mesmo que o navegador dela não "saia".
 await B.evaluate(() => { window.onVoiceEnded = () => {}; }); // simula cliente que ignora o aviso

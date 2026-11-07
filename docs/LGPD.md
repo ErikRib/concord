@@ -29,6 +29,7 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 | Respostas e menções (id da mensagem respondida; `<@id>` no texto) | Titular | Contexto da conversa | Consentimento | Servidor, dentro da mensagem | Junto com a mensagem |
 | Reações (mensagem, emoji, quem, quando) | Titular | Interação | Consentimento | Servidor; visível a quem vê o servidor | Junto com a mensagem; apagadas com os dados do titular |
 | Imagens (arquivo **sem metadados**, nome, tipo, tamanho, dimensões) | Titular | Compartilhar imagens no chat | Consentimento | Banco, entregue só por link assinado que expira (~24 h) | Junto com a mensagem; não usadas somem em 1 h |
+| Vídeos MP4/MOV (sem localização, modelo e datas de gravação) e outros arquivos (como enviados, até 25 MB) | Titular | Compartilhar arquivos no chat | Consentimento | Banco; link assinado; não-mídia só como download | Igual às imagens |
 | Sons do Soundpad (WAV ≤ 5 s **sem metadados**, nome, emoji, quem enviou) | Moderação do servidor | Soundpad nos canais de voz | Consentimento | Banco; link assinado; **quem enviou não é mostrado** | Enquanto fizer parte do servidor; apagados com o servidor ou com os dados de quem enviou |
 | Som tocado (quem, qual, em qual canal) | Titular | Avisar a chamada | Consentimento | **Não é gravado**: só repassado ao servidor na hora | — |
 | Preferências de sons, favoritos e recentes do Soundpad, emojis recentes | Titular | Conforto | — | **Apenas no navegador** | Até limpar o navegador ou apagar os dados |
@@ -93,6 +94,8 @@ e dados de navegação.
 | LiveKit órfão após uma queda | Job Object do Windows encerra o LiveKit junto com o Concord |
 | Metadados escondidos em fotos (GPS, aparelho, data) | Removidos no navegador (nova codificação por canvas) e de novo no servidor (EXIF/XMP/IPTC/comentários em PNG, JPEG, GIF e WebP). Testado com um PNG com localização |
 | Metadados em áudio (autor, software, ID3/LIST) | O navegador converte o som para WAV PCM; o servidor só aceita WAV PCM 16 bits e **reconstrói** o arquivo só com os blocos de formato e áudio |
+| Arquivo malicioso aberto com a origem do Concord (HTML/SVG com script) | O tipo vem do conteúdo, não do navegador; tudo que não é imagem, vídeo ou áudio sai como `application/octet-stream` + `attachment`, com CSP `sandbox` própria. Nomes sem caracteres de inversão de texto (truque "foto‮gpj.exe"); aviso em programas e scripts |
+| Localização em fotos HEIC/AVIF que o navegador não converte | Recusadas no servidor com orientação para enviar JPEG |
 | Envio de arquivo por terceiros ou sem permissão | Autorização de uso único (2 min) pedida pelo WebSocket; o segredo de identidade nunca vai na URL. Autorização de imagem não serve para som e vice-versa |
 | Links de imagens e sons copiados e espalhados | Links assinados (HMAC-SHA256, chave nova a cada execução), com validade de ~24 h e domínios separados (imagem ≠ som); `Cache-Control: private` |
 | Spam de sons na chamada | Só quem está na voz toca, no próprio canal; intervalo mínimo de 1,5 s; silenciados pela moderação não tocam; até 48 sons por servidor |

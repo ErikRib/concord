@@ -236,12 +236,15 @@ fn asset(mime: &'static str, body: &'static str) -> Response {
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        CSP.get()
-            .cloned()
-            .unwrap_or_else(|| build_csp(String::new())),
-    );
+    // Respostas com CSP própria (arquivos enviados, mais restrita) a mantêm.
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            CSP.get()
+                .cloned()
+                .unwrap_or_else(|| build_csp(String::new())),
+        );
+    }
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

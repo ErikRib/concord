@@ -36,7 +36,8 @@ const vset = Object.assign(
     preset: "1080p60",
     hint: "motion",
     shareAudio: true,
-    volumes: {}, // id pseudônimo -> volume (0 a 2)
+    volumes: {}, // id pseudônimo -> volume da voz (0 a 2)
+    streamVolumes: {}, // id pseudônimo -> volume do áudio da transmissão (0 a 2)
   },
   load("concord.voice", {}),
 );
@@ -325,9 +326,9 @@ async function applyMic(first) {
 }
 
 function applyVolume(p) {
-  const v = voice.deafened || myServerMute().deafened ? 0 : (vset.volumes[p.identity] ?? 1);
-  p.setVolume(v);
-  p.setVolume(v, SRC.ScreenShareAudio);
+  const deaf = voice.deafened || myServerMute().deafened;
+  p.setVolume(deaf ? 0 : (vset.volumes[p.identity] ?? 1));
+  p.setVolume(deaf ? 0 : (vset.streamVolumes?.[p.identity] ?? 1), SRC.ScreenShareAudio);
 }
 
 async function toggleMute() {
@@ -662,18 +663,25 @@ async function voiceSettings() {
   renderVoiceControls();
 }
 
-async function setUserVolume(user) {
-  const current = Math.round((vset.volumes[user.id] ?? 1) * 100);
-  const r = await dialog({
-    title: `Volume de ${user.name}`,
-    desc: "Só muda o que você ouve, neste navegador.",
-    submit: "Aplicar",
-    fields: [{ name: "v", type: "select", label: "Volume", value: String(current), options: [0, 25, 50, 75, 100, 125, 150, 200].map((v) => [String(v), `${v}%`]) }],
-  });
-  if (!r) return;
-  vset.volumes[user.id] = Number(r.v) / 100;
-  saveVset();
-  const p = voice.room?.getParticipantByIdentity(user.id);
+/** Volumes individuais: só mudam o que você ouve, neste navegador. */
+let volumeSaveTimer = null;
+function saveVolumesSoon() {
+  clearTimeout(volumeSaveTimer);
+  volumeSaveTimer = setTimeout(saveVset, 400);
+}
+
+function setUserVolume(id, v) {
+  vset.volumes[id] = v;
+  saveVolumesSoon();
+  const p = voice.room?.getParticipantByIdentity(id);
+  if (p) applyVolume(p);
+}
+
+function setStreamVolume(id, v) {
+  vset.streamVolumes ??= {};
+  vset.streamVolumes[id] = v;
+  saveVolumesSoon();
+  const p = voice.room?.getParticipantByIdentity(id);
   if (p) applyVolume(p);
 }
 
@@ -854,9 +862,15 @@ function tileEl(t) {
   }
   if (t.kind === "screen" && !t.local && voice.watching.has(t.identity)) {
     tools.append(button("Parar de assistir", null, (e) => { e.stopPropagation(); watch(t.identity, false); }));
+    // Volume do áudio da transmissão, na própria barra (funciona também em tela cheia).
+    const vol = volumeSlider(vset.streamVolumes?.[t.identity] ?? 1, (v) => setStreamVolume(t.identity, v), { compact: true });
+    vol.title = "Volume da transmissão (só para você)";
+    tools.prepend(vol);
   }
   if (!t.local && t.kind === "user") {
-    tools.append(button("Volume", null, (e) => { e.stopPropagation(); setUserVolume(t.user); }));
+    const vol = volumeSlider(vset.volumes[t.identity] ?? 1, (v) => setUserVolume(t.identity, v), { compact: true });
+    vol.title = `Volume de ${t.user.name} (só para você)`;
+    tools.prepend(vol);
   }
   div.append(tools);
   div.ondblclick = () => t.track && div.requestFullscreen?.();

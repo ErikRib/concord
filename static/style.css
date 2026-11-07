@@ -686,7 +686,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 /* ---------- seletor de emoji ---------- */
 .emoji-picker {
   position: fixed;
-  z-index: 30;
+  z-index: 60; /* acima de diálogos (.overlay = 40), que também abrem o seletor */
   width: 360px;
   max-width: calc(100vw - 16px);
   height: 380px;
@@ -791,7 +791,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 /* ---------- menu de contexto ---------- */
 .menu {
   position: fixed;
-  z-index: 30;
+  z-index: 60;
   min-width: 220px;
   max-width: 300px;
   background: var(--bg-floating);
@@ -1036,6 +1036,7 @@ textarea.field { resize: vertical; min-height: 70px; }
 .policy code { background: var(--bg-elevated); padding: 1px 5px; border-radius: var(--radius-xs); }
 
 #toast {
+  z-index: 70 !important;
   position: fixed;
   bottom: 24px;
   left: 50%;
@@ -1180,6 +1181,68 @@ textarea.field { resize: vertical; min-height: 70px; }
   .vv-controls { gap: var(--space-2); justify-content: space-evenly; padding-left: var(--space-2); padding-right: var(--space-2); }
   .cb-btn { width: 52px; height: 52px; }
 }
+
+/* ---------- barra de volume (e todos os controles deslizantes) ---------- */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--accent) var(--fill, 50%), var(--bg-selected) var(--fill, 50%));
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+}
+input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: none; }
+input[type="range"]:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.vol-slider { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.vol-slider input { flex: 1; min-width: 80px; }
+.vol-mute { flex: none; width: 28px; height: 28px; border: none; border-radius: var(--radius-sm); background: none; color: var(--text-muted); display: grid; place-items: center; }
+.vol-mute:hover { background: var(--bg-hover); color: var(--text-strong); }
+.vol-icon { width: 18px; height: 18px; }
+.vol-val { flex: none; width: 40px; text-align: right; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.vol-slider.compact { background: rgba(0, 0, 0, .7); border-radius: var(--radius-sm); padding: 2px 8px 2px 2px; color: #fff; }
+.vol-slider.compact input { width: 110px; flex: none; }
+.vol-slider.compact .vol-mute, .vol-slider.compact .vol-val { color: #fff; }
+.menu-slider { padding: 6px 8px 8px; }
+.menu-slider-label { font-size: var(--fs-xs); font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+
+/* ---------- arquivos no chat ---------- */
+.att-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; align-items: flex-start; }
+.att-list .attachments { margin-top: 0; }
+.att-media { display: flex; flex-direction: column; gap: 6px; max-width: min(520px, 100%); }
+.att-media.audio { width: min(420px, 100%); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2); }
+.att-media.audio audio { width: 100%; }
+.att-media.audio .file-card { border: none; padding: 0; background: none; }
+.att-video { max-width: 100%; max-height: 360px; border-radius: var(--radius); background: #000; }
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: min(420px, 100%);
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.file-card.compact { padding: 0; border: none; background: none; width: 100%; }
+.fc-icon { width: 30px; height: 30px; flex: none; color: var(--accent); }
+.fc-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.fc-name { color: var(--link); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-size { font-size: var(--fs-xs); color: var(--text-muted); }
+.fc-warn { font-size: var(--fs-xs); color: var(--warning); }
+.fc-dl { color: var(--text-muted); }
+.chip-ph { flex-direction: column; gap: 4px; }
+.chip-icon { width: 28px; height: 28px; }
+.chip-ext { font-size: 11px; font-weight: 700; }
 
 /* ---------- configurações: sons ---------- */
 .range-row { display: flex; align-items: center; gap: var(--space-3); max-width: 420px; }

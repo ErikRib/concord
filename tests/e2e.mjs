@@ -53,7 +53,7 @@ function client(origin) {
 async function login(secret, name) {
   const c = client();
   await c.opened;
-  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 5 });
+  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 6 });
   c.ready = await c.wait(type("ready"));
   c.id = c.ready.me.id;
   return c;
@@ -63,12 +63,12 @@ async function login(secret, name) {
 const res = await fetch(base + "/");
 check(res.headers.get("content-security-policy")?.includes("default-src 'self'"), "CSP presente");
 const pol = await (await fetch(base + "/privacidade")).text();
-check(pol.includes("Versão 5") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v5 renderizada e escapada");
+check(pol.includes("Versão 6") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v6 renderizada e escapada");
 check((await fetch(base + "/convite/abc123XYZ")).status === 200, "rota /convite/:code entrega o app");
 
 let c0 = client(); await c0.opened;
 c0.send({ type: "hello", secret: S.a, name: "Ana", color: "#ff0000", consent_version: 1 });
-check((await c0.wait(type("consent_required"))).version === 5, "aceite antigo não vale mais: pede consentimento da v5");
+check((await c0.wait(type("consent_required"))).version === 6, "aceite antigo não vale mais: pede consentimento da v6");
 await c0.closed;
 
 let blocked = false;
@@ -257,14 +257,51 @@ let attUrl;
   const upJ = await up.json();
   check(up.status === 201 && upJ.width === 2 && upJ.height === 1 && upJ.name === "férias.png", "imagem aceita, com nome limpo e extensão real");
   check((await post(g2, png)).status === 403, "autorização de envio é de uso único");
-  const g3 = await beginUpload(B, ch, 20);
-  check((await post(g3, Buffer.from("<html>nao sou imagem"))).status === 415, "arquivo que não é imagem é recusado");
+  // Outros arquivos: HTML vira download protegido, GIF sem o byte final é aceito,
+  // MP4 perde a localização e as datas, foto HEIC (com GPS) é recusada.
+  const html = Buffer.from("<html><script>alert(1)</script>");
+  const g3 = await beginUpload(B, ch, html.length);
+  const r3 = await post(g3, html, "pagina.html");
+  const j3 = await r3.json();
+  check(r3.status === 201 && j3.mime === "application/octet-stream" && j3.name === "pagina.html", "arquivo qualquer é aceito, com tipo neutro");
+  const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0x80, 0, 0, 255, 255, 255, 0, 0, 0,
+    0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0]); // sem o 0x3B final
+  const g4 = await beginUpload(B, ch, gif.length);
+  const r4 = await post(g4, gif, "meme.gif");
+  const j4 = await r4.json();
+  check(r4.status === 201 && j4.mime === "image/gif", "GIF sem o byte final (comum na internet) é aceito");
+  const box = (kind, body) => { const h = Buffer.alloc(8); h.writeUInt32BE(body.length + 8); h.write(kind, 4, "latin1"); return Buffer.concat([h, body]); };
+  const mvhd = Buffer.alloc(100); mvhd.fill(0xAB, 4, 12);
+  const mp4 = Buffer.concat([
+    box("ftyp", Buffer.from("isom\0\0\0\0isommp41", "latin1")),
+    box("moov", Buffer.concat([box("mvhd", mvhd), box("udta", box("\u00a9xyz", Buffer.from("+23.5503-046.6339/")))])),
+    box("mdat", Buffer.alloc(2000, 7)),
+  ]);
+  const g5 = await beginUpload(B, ch, mp4.length);
+  const r5 = await post(g5, mp4, "video.mp4");
+  const j5 = await r5.json();
+  check(r5.status === 201 && j5.mime === "video/mp4", "vídeo MP4 aceito");
+  const heic = box("ftyp", Buffer.from("heic\0\0\0\0mif1heic", "latin1"));
+  const g6 = await beginUpload(B, ch, heic.length);
+  check((await post(g6, heic, "foto.heic")).status === 415, "foto HEIC (que guarda GPS) é recusada com orientação");
 
   A.send({ type: "send_message", channel_id: ch, content: "roubando", attachments: [upJ.id] });
-  check((await A.error()).includes("Imagem inválida"), "não dá para anexar a imagem enviada por outra pessoa");
-  B.send({ type: "send_message", channel_id: ch, content: "", attachments: [upJ.id] });
-  const withImg = (await A.wait((m) => m.type === "message" && m.message.attachments.length === 1)).message;
+  check((await A.error()).includes("Arquivo inválido"), "não dá para anexar o arquivo enviado por outra pessoa");
+  B.send({ type: "send_message", channel_id: ch, content: "", attachments: [upJ.id, j3.id, j4.id, j5.id] });
+  const withImg = (await A.wait((m) => m.type === "message" && m.message.attachments.length === 4)).message;
   attUrl = withImg.attachments[0].url;
+  const byId = (id) => withImg.attachments.find((a) => a.id === id);
+  const dl = await fetch(base + byId(j3.id).url);
+  check(dl.headers.get("content-type") === "application/octet-stream" && dl.headers.get("content-disposition")?.startsWith("attachment")
+    && dl.headers.get("content-security-policy")?.includes("sandbox"), "HTML enviado é só baixado, nunca aberto como página do Concord");
+  const vid = await fetch(base + byId(j5.id).url);
+  const vidBytes = Buffer.from(await vid.arrayBuffer());
+  check(vid.headers.get("content-type") === "video/mp4" && vid.headers.get("content-disposition")?.startsWith("inline")
+    && !vidBytes.includes("+23.5503") && !vidBytes.includes("udta") && !vidBytes.includes(Buffer.alloc(4, 0xAB)) && vidBytes.length === mp4.length,
+    "vídeo sem localização nem data de gravação, e do mesmo tamanho (continua tocando)");
+  const part = await fetch(base + byId(j5.id).url, { headers: { Range: "bytes=0-9" } });
+  check(part.status === 206 && (await part.arrayBuffer()).byteLength === 10 && part.headers.get("content-range") === `bytes 0-9/${mp4.length}`,
+    "vídeo aceita pedidos parciais (avançar e voltar)");
   check(withImg.attachments[0].mime === "image/png" && /^\/anexos\/[0-9a-f-]+\?exp=\d+&sig=/.test(attUrl), "mensagem só com imagem leva link assinado");
   const img = await fetch(base + attUrl);
   const bytes = Buffer.from(await img.arrayBuffer());
@@ -284,8 +321,8 @@ let attUrl;
   check(h.messages.some((m) => m.attachments[0]?.id === upJ.id && m.attachments[0].url.includes("sig=")), "histórico traz imagens com link assinado");
   B.send({ type: "export_my_data" });
   const bExp = (await B.wait(type("my_data"))).data;
-  check(bExp.reacoes.some((r) => r.emoji === "👍") && bExp.imagens.length === 1 && bExp.mensagens.some((m) => m.resposta_a),
-    "exportação traz reações, imagens e respostas");
+  check(bExp.reacoes.some((r) => r.emoji === "👍") && bExp.arquivos.length === 4 && bExp.mensagens.some((m) => m.resposta_a),
+    "exportação traz reações, arquivos e respostas");
 }
 
 // ---------- paginação do histórico (banco de dados) ----------

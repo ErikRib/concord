@@ -106,7 +106,18 @@ com ponto de status, nome + subtítulo, e ícones microfone / áudio / configura
 - Menção (`.mention`): pílula `--accent-soft`; a mim (`.mention.me`) e a linha inteira
   (`.msg.mentioned`) em amarelo `--warning`.
 - Imagens (`.attachments`): até 420×340; 2+ viram grade; clique abre o visualizador
-  (`.lightbox`). "(editado)" em `.edited`, 11 px faint.
+  (`.lightbox`). Vídeo e áudio com player (`.att-media`); outros arquivos em `.file-card`
+  (ícone pelo tipo, nome em link, tamanho, botão de baixar e aviso amarelo em programas).
+  "(editado)" em `.edited`, 11 px faint.
+
+### Volume (`volumeSlider` em `app.js`)
+Todo volume é uma **barra** (0–200%, mudo à esquerda, valor à direita), aplicada enquanto
+arrasta — nunca uma lista de opções. No menu da pessoa vira item `{ slider }`; nos blocos da
+chamada fica na própria barra de ferramentas (`.vol-slider.compact`), que funciona em tela cheia.
+Todo `input[type=range]` usa o mesmo estilo (trilha preenchida em `--accent`).
+
+### Camadas (z-index)
+Gavetas 25, menus de emoji e de contexto 60 (acima dos diálogos, 40, que também os abrem), toast 70.
 
 ### Compositor
 `.composer-box` carrega a borda (o `#input` não tem). Acima dele, sempre colados:

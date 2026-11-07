@@ -863,7 +863,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 for a in &attachments {
                     // Só imagens enviadas por esta pessoa, para este canal, ainda não usadas.
                     if !db::link_attachment(tx, *a, message.id, uid, channel_id)? {
-                        return Err("Imagem inválida ou expirada; envie de novo".into());
+                        return Err("Arquivo inválido ou expirado; envie de novo".into());
                     }
                 }
                 let sign = |id: Uuid| st.sign_attachment(id);
@@ -964,7 +964,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
         ClientMsg::UploadBegin { channel_id, size } => {
             if size == 0 || size > MAX_UPLOAD_BYTES {
                 return Err(format!(
-                    "A imagem deve ter até {} MB",
+                    "O arquivo deve ter até {} MB",
                     MAX_UPLOAD_BYTES / 1024 / 1024
                 )
                 .into());
@@ -987,7 +987,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
             }
             if st.read(|c| db::count_pending_attachments(c, uid))? >= MAX_PENDING_UPLOADS {
                 return Err(
-                    "Muitas imagens aguardando envio; envie a mensagem ou espere um pouco".into(),
+                    "Muitos arquivos aguardando envio; envie a mensagem ou espere um pouco".into(),
                 );
             }
             let (upload_id, token) = st.grant_upload(uid, UploadPurpose::Image { channel_id });
@@ -1328,7 +1328,7 @@ fn check_can_act_on(st: &AppState, s: &Server, actor: Uuid, admin: bool, target:
     Ok(())
 }
 
-const MAX_ATTACHMENTS: usize = 4;
+const MAX_ATTACHMENTS: usize = 10;
 const MAX_REACTION_EMOJIS: usize = 20;
 
 /// Reação: um emoji (pode ter modificadores de tom, ZWJ e seletores de variação).

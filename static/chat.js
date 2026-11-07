@@ -299,24 +299,44 @@ function mentionKeydown(e) {
 }
 input.addEventListener("blur", () => setTimeout(hideMentionSuggest, 150));
 
-// ---------- imagens ----------
-const ACCEPTED = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const MAX_IMAGES = 4;
+// ---------- arquivos ----------
+const MAX_FILES = 10;
+const MAX_FILE_MB = 25;
+// Fotos recodificadas aqui (perdem todos os metadados). HEIC só abre no Safari; nos outros
+// navegadores vai como está e o servidor pede outro formato (em vez de repassar o GPS).
+const REENCODE = ["image/png", "image/jpeg", "image/webp", "image/avif", "image/bmp", "image/heic", "image/heif"];
+const EXECUTABLE = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk|dmg|pkg|sh|lnk|reg|hta)$/i;
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
 
 /**
- * Recodifica no navegador: aplica a rotação da foto e descarta TODOS os metadados
- * (EXIF/GPS etc.). GIF vai como está (para manter a animação; o servidor limpa).
+ * Imagens: recodifica no navegador, aplica a rotação da foto e descarta TODOS os metadados
+ * (EXIF/GPS etc.). GIF vai como está (para manter a animação; o servidor limpa). Outros
+ * arquivos vão como estão (vídeos MP4/MOV têm a localização removida no servidor).
  */
-async function prepareImage(file) {
-  if (file.type === "image/gif") return file;
-  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+async function prepareFile(file) {
+  if (!REENCODE.includes(file.type)) return file;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    return file; // formato que o navegador não abre (ex.: HEIC fora do Safari)
+  }
+  return reencode(file, bitmap);
+}
+
+async function reencode(file, bitmap) {
   const scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close?.();
-  const type = file.type === "image/png" ? "image/png" : file.type === "image/webp" ? "image/webp" : "image/jpeg";
+  const type = ["image/png", "image/bmp"].includes(file.type) ? "image/png" : file.type === "image/webp" ? "image/webp" : "image/jpeg";
   return await new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("falha ao processar"))), type, 0.9),
   );
@@ -344,25 +364,30 @@ function onUploadToken(m) {
 async function addFiles(files) {
   if (!state.channelId || currentChannel()?.kind === "voice") return;
   for (const file of files) {
-    if (composer.uploads.length >= MAX_IMAGES) {
-      toast(`No máximo ${MAX_IMAGES} imagens por mensagem`);
+    if (composer.uploads.length >= MAX_FILES) {
+      toast(`No máximo ${MAX_FILES} arquivos por mensagem`);
       break;
     }
-    if (!ACCEPTED.includes(file.type)) {
-      toast("Formato não suportado: envie PNG, JPEG, GIF ou WebP");
+    if (file.size > MAX_FILE_MB * 1024 * 1024) {
+      toast(`${file.name} tem ${formatBytes(file.size)}; o limite é ${MAX_FILE_MB} MB`);
+      continue;
+    }
+    if (file.size === 0) {
+      toast(`${file.name} está vazio`);
       continue;
     }
     const item = { key: Math.random().toString(36).slice(2), file, blob: null, url: "", status: "uploading", id: null };
     composer.uploads.push(item);
     renderUploads();
     try {
-      item.blob = await prepareImage(file);
-      item.url = URL.createObjectURL(item.blob);
+      item.blob = await prepareFile(file);
+      if (item.blob.size > MAX_FILE_MB * 1024 * 1024) throw new Error(`passou de ${MAX_FILE_MB} MB`);
+      if (item.blob.type.startsWith("image/")) item.url = URL.createObjectURL(item.blob);
       renderUploads();
       const tokenWait = waitUploadToken();
       send({ type: "upload_begin", channel_id: state.channelId, size: item.blob.size });
       const t = await tokenWait;
-      const name = encodeURIComponent(file.name || "imagem");
+      const name = encodeURIComponent(file.name || "arquivo");
       const res = await fetch(`/anexos/${t.upload_id}?token=${encodeURIComponent(t.token)}&name=${name}`, {
         method: "POST",
         body: item.blob,
@@ -376,7 +401,7 @@ async function addFiles(files) {
       item.status = "ready";
     } catch (e) {
       item.status = "error";
-      toast(`Não foi possível enviar ${file.name || "a imagem"}: ${e.message}`);
+      toast(`Não foi possível enviar ${file.name || "o arquivo"}: ${e.message}`);
     }
     renderUploads();
   }
@@ -394,7 +419,10 @@ function renderUploads() {
       img.alt = u.file.name;
       chip.append(img);
     } else {
-      chip.append(el("div", "chip-ph", "…"));
+      const ext = (u.file.name.match(/\.([a-z0-9]{1,8})$/i)?.[1] ?? "").toUpperCase();
+      const ph = el("div", "chip-ph");
+      ph.append(icon(fileIconName(u.file.type, u.file.name), "chip-icon"), el("span", "chip-ext", ext || formatBytes(u.file.size)));
+      chip.append(ph);
     }
     chip.append(el("span", "chip-name", u.status === "uploading" ? "Enviando…" : u.status === "error" ? "Falhou" : u.file.name));
     const rm = button("✕", "chip-remove", () => {
@@ -415,7 +443,7 @@ $("#file-input").onchange = (e) => {
   e.target.value = "";
 };
 input.addEventListener("paste", (e) => {
-  const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+  const files = [...(e.clipboardData?.files ?? [])];
   if (files.length) {
     e.preventDefault();
     addFiles(files);
@@ -465,19 +493,81 @@ function replyPreviewEl(m) {
   return box;
 }
 
+function fileIconName(mime, name) {
+  if (mime.startsWith("video/")) return "film";
+  if (mime.startsWith("audio/")) return "music";
+  if (/\.(zip|rar|7z|tar|gz|bz2|xz)$/i.test(name)) return "archive";
+  if (EXECUTABLE.test(name)) return "alert";
+  return "file";
+}
+
+/** Imagens em grade; vídeo e áudio com player; o resto vira um cartão para baixar. */
 function attachmentsEl(m) {
-  const box = el("div", m.attachments.length > 1 ? "attachments grid" : "attachments");
-  for (const a of m.attachments) {
-    const img = el("img", "att-img");
-    img.src = a.url;
-    img.alt = a.name;
-    img.loading = "lazy";
-    img.width = a.width;
-    img.height = a.height;
-    img.onclick = () => openLightbox(a);
-    box.append(img);
+  const wrap = el("div", "att-list");
+  const images = m.attachments.filter((a) => a.mime.startsWith("image/"));
+  if (images.length) {
+    const box = el("div", images.length > 1 ? "attachments grid" : "attachments");
+    for (const a of images) {
+      const img = el("img", "att-img");
+      img.src = a.url;
+      img.alt = a.name;
+      img.loading = "lazy";
+      img.width = a.width;
+      img.height = a.height;
+      img.onclick = () => openLightbox(a);
+      box.append(img);
+    }
+    wrap.append(box);
   }
-  return box;
+  for (const a of m.attachments) {
+    if (a.mime.startsWith("image/")) continue;
+    if (a.mime.startsWith("video/")) {
+      const v = el("video", "att-video");
+      v.src = a.url;
+      v.controls = true;
+      v.preload = "metadata";
+      v.playsInline = true;
+      const card = el("div", "att-media");
+      card.append(v, fileCard(a, true));
+      wrap.append(card);
+      continue;
+    }
+    if (a.mime.startsWith("audio/")) {
+      const card = el("div", "att-media audio");
+      const au = el("audio");
+      au.src = a.url;
+      au.controls = true;
+      au.preload = "metadata";
+      card.append(fileCard(a, true), au);
+      wrap.append(card);
+      continue;
+    }
+    wrap.append(fileCard(a));
+  }
+  return wrap;
+}
+
+function fileCard(a, compact) {
+  const card = el("div", compact ? "file-card compact" : "file-card");
+  card.append(icon(fileIconName(a.mime, a.name), "fc-icon"));
+  const info = el("div", "fc-info");
+  const link = el("a", "fc-name", a.name);
+  link.href = a.url;
+  link.download = a.name;
+  link.rel = "noopener";
+  info.append(link, el("span", "fc-size", formatBytes(a.size)));
+  if (EXECUTABLE.test(a.name)) {
+    info.append(el("span", "fc-warn", "Programa ou script: só abra se confiar em quem enviou."));
+  }
+  card.append(info);
+  const dl = el("a", "icon-btn fc-dl");
+  dl.href = a.url;
+  dl.download = a.name;
+  dl.title = "Baixar";
+  dl.setAttribute("aria-label", `Baixar ${a.name}`);
+  dl.append(icon("download"));
+  card.append(dl);
+  return card;
 }
 
 function reactionsEl(m) {

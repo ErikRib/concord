@@ -34,11 +34,11 @@ pub struct VoiceSession {
 
 /// Versão da política de privacidade. Aumente ao mudar a política:
 /// todos precisarão aceitar de novo (LGPD art. 8º, §6º e art. 9º, §2º).
-pub const POLICY_VERSION: u32 = 5;
+pub const POLICY_VERSION: u32 = 6;
 /// Tamanho máximo de uma imagem enviada.
-pub const MAX_UPLOAD_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_UPLOAD_BYTES: u64 = crate::media::MAX_FILE_BYTES;
 /// Imagens pendentes (enviadas e ainda não usadas) por pessoa.
-pub const MAX_PENDING_UPLOADS: usize = 8;
+pub const MAX_PENDING_UPLOADS: usize = 10;
 /// Validade de um token de envio de imagem.
 const UPLOAD_TOKEN_MS: i64 = 120_000;
 /// Tamanho máximo de um som do Soundpad (WAV de até ~5 s).
@@ -944,8 +944,8 @@ impl AppState {
             "servidores": servidores,
             "mensagens": mensagens,
             "reacoes": reacoes,
-            "imagens": imagens,
-            "imagens_observacao": "Os links valem por cerca de 24 horas e são relativos ao endereço do Concord. Metadados (como localização) são removidos no envio.",
+            "arquivos": imagens,
+            "arquivos_observacao": "Os links valem por cerca de 24 horas e são relativos ao endereço do Concord. Metadados (como localização) são removidos de imagens e vídeos MP4/MOV no envio; outros arquivos ficam como foram enviados.",
             "sons_do_soundpad": sons,
             "denuncias_feitas": denuncias,
             "banimentos_recebidos": banimentos,
