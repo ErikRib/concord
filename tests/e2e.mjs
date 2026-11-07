@@ -1,5 +1,6 @@
-// Teste de ponta a ponta do Concord (v2: moderação). Uso: node tests/e2e.mjs [porta] | node tests/e2e.mjs --admin-id
+// Teste de ponta a ponta do Concord (moderação, voz e chat). Uso: node tests/e2e.mjs [porta] | node tests/e2e.mjs --admin-id
 import { createHash } from "node:crypto";
+import zlib from "node:zlib";
 
 const S = { a: "a".repeat(64), b: "b".repeat(64), c: "c".repeat(64), d: "d".repeat(64), e: "e".repeat(64) };
 const idOf = (secret) => {
@@ -52,7 +53,7 @@ function client(origin) {
 async function login(secret, name) {
   const c = client();
   await c.opened;
-  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 3 });
+  c.send({ type: "hello", secret, name, color: "#123456", consent_version: 5 });
   c.ready = await c.wait(type("ready"));
   c.id = c.ready.me.id;
   return c;
@@ -62,12 +63,12 @@ async function login(secret, name) {
 const res = await fetch(base + "/");
 check(res.headers.get("content-security-policy")?.includes("default-src 'self'"), "CSP presente");
 const pol = await (await fetch(base + "/privacidade")).text();
-check(pol.includes("Versão 3") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v3 renderizada e escapada");
+check(pol.includes("Versão 5") && pol.includes("Teste &lt;Ltda&gt;") && !pol.includes("{{"), "política v5 renderizada e escapada");
 check((await fetch(base + "/convite/abc123XYZ")).status === 200, "rota /convite/:code entrega o app");
 
 let c0 = client(); await c0.opened;
 c0.send({ type: "hello", secret: S.a, name: "Ana", color: "#ff0000", consent_version: 1 });
-check((await c0.wait(type("consent_required"))).version === 3, "aceite antigo não vale mais: pede consentimento da v3");
+check((await c0.wait(type("consent_required"))).version === 5, "aceite antigo não vale mais: pede consentimento da v5");
 await c0.closed;
 
 let blocked = false;
@@ -168,6 +169,124 @@ A.send({ type: "export_my_data" });
 const aExp = (await A.wait(type("my_data"))).data;
 check(aExp.denuncias_feitas.length === 0 && aExp.servidores.some((s) => s.papel === "owner"),
   "exportação do dono traz o servidor; denúncia resolvida já não existe");
+
+// ---------- chat: respostas, edição, reações e imagens ----------
+// PNG 2x1 válido com um bloco de texto (metadado) que precisa ser removido no envio.
+function pngWithMetadata() {
+  const chunk = (t, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(t, "ascii"), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(2, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const raw = Buffer.from([0, 255, 0, 0, 0, 0, 255]);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("tEXt", Buffer.from("Location\0GPS-SEGREDO -23.5,-46.6")),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+async function beginUpload(c, channel_id, size) {
+  c.send({ type: "upload_begin", channel_id, size });
+  return c.wait(type("upload_token"));
+}
+const post = (g, body, name = "foto.png") =>
+  fetch(`${base}/anexos/${g.upload_id}?token=${encodeURIComponent(g.token)}&name=${encodeURIComponent(name)}`, { method: "POST", body });
+
+let attUrl;
+{
+  check((await fetch(base + "/favicon.svg")).headers.get("content-type")?.startsWith("image/svg+xml"), "favicon servido");
+
+  A.send({ type: "send_message", channel_id: ch, content: "pergunta original" });
+  const orig = (await B.wait((m) => m.type === "message" && m.message.content === "pergunta original")).message;
+  check(orig.reactions.length === 0 && orig.attachments.length === 0 && orig.edited_at === null, "mensagem nova vem sem reações, imagens nem edição");
+
+  // resposta
+  B.send({ type: "send_message", channel_id: ch, content: "resposta", reply_to: orig.id });
+  const rep = (await A.wait((m) => m.type === "message" && m.message.content === "resposta")).message;
+  check(rep.reply_to?.id === orig.id && rep.reply_to.author?.name === "Ana" && rep.reply_to.excerpt === "pergunta original",
+    "resposta traz a prévia da mensagem original");
+  B.send({ type: "send_message", channel_id: ch, content: "x", reply_to: "0190a8b0-0000-7000-8000-000000000000" });
+  check((await B.error()).includes("não existe"), "resposta a mensagem inexistente é recusada");
+
+  // edição
+  B.send({ type: "edit_message", channel_id: ch, message_id: orig.id, content: "hackeado" });
+  check((await B.error()) === "Só quem escreveu pode editar", "ninguém edita mensagem alheia (nem moderador)");
+  A.send({ type: "edit_message", channel_id: ch, message_id: orig.id, content: "   " });
+  check((await A.error()).includes("vazia"), "edição não deixa a mensagem vazia");
+  A.send({ type: "edit_message", channel_id: ch, message_id: orig.id, content: "pergunta corrigida" });
+  const ed = await B.wait((m) => m.type === "message_edited" && m.message_id === orig.id);
+  check(ed.content === "pergunta corrigida" && ed.edited_at > 0, "edição chega para todos com a marca de editada");
+
+  // reações
+  B.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: "👍", on: true });
+  const ru = await A.wait((m) => m.type === "reaction_update" && m.message_id === orig.id);
+  check(ru.emoji === "👍" && ru.user_id === B.id && ru.on, "reação chega para o servidor");
+  B.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: "👍", on: true });
+  check(await A.none((m) => m.type === "reaction_update" && m.message_id === orig.id, 400), "reação repetida não gera evento");
+  await sleep(3400); // o limite é 10 ações em rajada e 3/s; o teste respeita
+  for (const bad of ["abc", "<script>", "👍 👍", ""]) {
+    B.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: bad, on: true });
+    check((await B.error()) === "Reação inválida", `reação inválida recusada: ${JSON.stringify(bad)}`);
+  }
+  await sleep(3400);
+  for (let k = 0; k < 19; k++) { await sleep(340); A.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: String.fromCodePoint(0x1f600 + k), on: true }); }
+  for (let k = 0; k < 19; k++) await A.wait((m) => m.type === "reaction_update" && m.user_id === A.id);
+  A.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: "🦀", on: true });
+  check((await A.error()).includes("Limite de 20"), "limite de 20 reações diferentes por mensagem");
+  A.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: "👍", on: true });
+  check((await B.wait((m) => m.type === "reaction_update" && m.user_id === A.id && m.emoji === "👍")).on, "emoji já existente ainda aceita mais gente");
+  C.send({ type: "react", channel_id: ch, message_id: orig.id, emoji: "👍", on: true });
+  check((await C.error()) === "Você não tem permissão para isso", "banido não reage");
+
+  // imagens
+  await sleep(3400);
+  C.send({ type: "upload_begin", channel_id: ch, size: 100 });
+  check((await C.error()) === "Você não tem permissão para isso", "banido não recebe autorização de envio");
+  B.send({ type: "upload_begin", channel_id: ch, size: 50 * 1024 * 1024 });
+  check((await B.error()).includes("MB"), "imagem grande demais é recusada antes do envio");
+
+  const png = pngWithMetadata();
+  const g1 = await beginUpload(B, ch, png.length);
+  check((await post({ ...g1, token: "x".repeat(g1.token.length) }, png)).status === 403, "envio com autorização falsa é recusado");
+  const g2 = await beginUpload(B, ch, png.length);
+  const up = await post(g2, png, "../../férias\u0007.jpeg");
+  const upJ = await up.json();
+  check(up.status === 201 && upJ.width === 2 && upJ.height === 1 && upJ.name === "férias.png", "imagem aceita, com nome limpo e extensão real");
+  check((await post(g2, png)).status === 403, "autorização de envio é de uso único");
+  const g3 = await beginUpload(B, ch, 20);
+  check((await post(g3, Buffer.from("<html>nao sou imagem"))).status === 415, "arquivo que não é imagem é recusado");
+
+  A.send({ type: "send_message", channel_id: ch, content: "roubando", attachments: [upJ.id] });
+  check((await A.error()).includes("Imagem inválida"), "não dá para anexar a imagem enviada por outra pessoa");
+  B.send({ type: "send_message", channel_id: ch, content: "", attachments: [upJ.id] });
+  const withImg = (await A.wait((m) => m.type === "message" && m.message.attachments.length === 1)).message;
+  attUrl = withImg.attachments[0].url;
+  check(withImg.attachments[0].mime === "image/png" && /^\/anexos\/[0-9a-f-]+\?exp=\d+&sig=/.test(attUrl), "mensagem só com imagem leva link assinado");
+  const img = await fetch(base + attUrl);
+  const bytes = Buffer.from(await img.arrayBuffer());
+  check(img.status === 200 && img.headers.get("content-type") === "image/png" && img.headers.get("cache-control")?.startsWith("private"),
+    "imagem é entregue com cache privado");
+  check(!bytes.includes("GPS-SEGREDO") && bytes.subarray(1, 4).toString() === "PNG", "metadados removidos da imagem guardada");
+  check((await fetch(base + attUrl.replace(/sig=.{4}/, "sig=AAAA"))).status === 404, "link com assinatura adulterada não abre");
+  check((await fetch(base + attUrl.replace(/exp=\d+/, "exp=9999999999999"))).status === 404, "não dá para estender a validade do link");
+
+  // histórico e exportação
+  await sleep(3400);
+  B.send({ type: "fetch_history", channel_id: ch });
+  const h = await B.wait(type("history"));
+  const hOrig = h.messages.find((m) => m.id === orig.id);
+  check(hOrig.content === "pergunta corrigida" && hOrig.edited_at && hOrig.reactions.find((r) => r.emoji === "👍")?.users.length === 2,
+    "histórico traz edição e reações");
+  check(h.messages.some((m) => m.attachments[0]?.id === upJ.id && m.attachments[0].url.includes("sig=")), "histórico traz imagens com link assinado");
+  B.send({ type: "export_my_data" });
+  const bExp = (await B.wait(type("my_data"))).data;
+  check(bExp.reacoes.some((r) => r.emoji === "👍") && bExp.imagens.length === 1 && bExp.mensagens.some((m) => m.resposta_a),
+    "exportação traz reações, imagens e respostas");
+}
 
 // ---------- paginação do histórico (banco de dados) ----------
 {
@@ -273,6 +392,92 @@ if (!A.ready.voice_enabled) {
   await sleep(2000);
 }
 
+// ---------- Soundpad ----------
+function wavFile(seconds, withMeta = true) {
+  const rate = 48000, n = Math.round(seconds * rate);
+  const meta = withMeta ? Buffer.concat([Buffer.from("LIST"), Buffer.from([16, 0, 0, 0]), Buffer.from("INFOIART"), Buffer.from([4, 0, 0, 0]), Buffer.from("Ana\0")]) : Buffer.alloc(0);
+  const fmt = Buffer.alloc(24);
+  fmt.write("fmt ", 0); fmt.writeUInt32LE(16, 4); fmt.writeUInt16LE(1, 8); fmt.writeUInt16LE(1, 10);
+  fmt.writeUInt32LE(rate, 12); fmt.writeUInt32LE(rate * 2, 16); fmt.writeUInt16LE(2, 20); fmt.writeUInt16LE(16, 22);
+  const data = Buffer.alloc(8 + n * 2);
+  data.write("data", 0); data.writeUInt32LE(n * 2, 4);
+  for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin(i / 20) * 8000), 8 + i * 2);
+  const body = Buffer.concat([Buffer.from("WAVE"), meta, fmt, data]);
+  const head = Buffer.alloc(8); head.write("RIFF", 0); head.writeUInt32LE(body.length, 4);
+  return Buffer.concat([head, body]);
+}
+const postSound = (g, body) => fetch(`${base}/sons/${g.upload_id}?token=${encodeURIComponent(g.token)}`, { method: "POST", body });
+async function soundToken(c, name, size, emoji) {
+  c.send({ type: "sound_upload_begin", server_id: priv.id, size, name, emoji });
+  return c.wait((m) => m.type === "upload_token" && m.kind === "sound");
+}
+let keptSoundUrl;
+{
+  await sleep(3400);
+  C.send({ type: "sound_upload_begin", server_id: priv.id, size: 1000, name: "x" });
+  check((await C.error()) === "Você não tem permissão para isso", "Soundpad: quem não é do servidor não envia som");
+  B.send({ type: "sound_upload_begin", server_id: priv.id, size: 1000, name: "x", emoji: "abc" });
+  check((await B.error()) === "Emoji inválido", "Soundpad: emoji inválido recusado");
+
+  const w = wavFile(1);
+  const g1 = await soundToken(B, "Risada", w.length, "😂");
+  const r1 = await postSound(g1, w);
+  const j1 = await r1.json();
+  check(r1.status === 201 && j1.duration_ms === 1000, "Soundpad: moderador envia som WAV");
+  await A.wait((m) => m.type === "sounds_changed" && m.server_id === priv.id);
+  check(true, "Soundpad: servidor avisa que a lista mudou");
+
+  const gImg = await beginUpload(B, ch, 100);
+  check((await postSound(gImg, w)).status === 403, "Soundpad: autorização de imagem não serve para som");
+  const g2 = await soundToken(B, "Longo", 700000);
+  check((await postSound(g2, wavFile(6, false))).status === 415, "Soundpad: som com mais de 5 s é recusado");
+  const g3 = await soundToken(B, "Falso", 100);
+  check((await postSound(g3, Buffer.from("ID3\u0003 isto seria um mp3"))).status === 415, "Soundpad: arquivo que não é WAV PCM é recusado");
+  const g4 = await soundToken(B, "Mantido", w.length);
+  await postSound(g4, wavFile(0.5));
+
+  A.send({ type: "fetch_sounds", server_id: priv.id });
+  const list = await A.wait((m) => m.type === "sounds" && m.server_id === priv.id);
+  const ris = list.sounds.find((s) => s.name === "Risada");
+  check(list.can_manage && list.sounds.length === 2 && ris?.emoji === "😂" && !JSON.stringify(list).includes("uploader"),
+    "Soundpad: lista traz os sons (sem dizer quem enviou)");
+  keptSoundUrl = list.sounds.find((s) => s.name === "Mantido").url;
+  const got = await fetch(base + ris.url);
+  const gotBytes = Buffer.from(await got.arrayBuffer());
+  check(got.status === 200 && got.headers.get("content-type") === "audio/wav" && !gotBytes.includes("LIST") && !gotBytes.includes("Ana"),
+    "Soundpad: som entregue sem metadados");
+  check((await fetch(base + ris.url.replace("/sons/", "/anexos/"))).status === 404, "Soundpad: link de som não abre como imagem");
+  check((await fetch(base + ris.url.replace(/sig=.{4}/, "sig=AAAA"))).status === 404, "Soundpad: link adulterado não abre");
+
+  B.send({ type: "export_my_data" });
+  const bx = (await B.wait(type("my_data"))).data;
+  check(bx.sons_do_soundpad.length === 2 && bx.sons_do_soundpad[0].link_para_baixar, "Soundpad: exportação traz os sons enviados");
+
+  await sleep(3400);
+  A.send({ type: "play_sound", sound: "builtin:buzina" });
+  check((await A.error()).includes("canal de voz"), "Soundpad: fora da voz não toca");
+  if (A.ready.voice_enabled) {
+    const vc = priv.channels.find((c) => c.kind === "voice").id;
+    A.send({ type: "voice_join", channel_id: vc });
+    await A.wait(type("voice_token"));
+    A.send({ type: "play_sound", sound: "builtin:buzina" });
+    const sp1 = await B.wait((m) => m.type === "sound_played");
+    check(sp1.user_id === A.id && sp1.channel_id === vc && sp1.sound === "builtin:buzina", "Soundpad: som padrão chega para o servidor");
+    A.send({ type: "play_sound", sound: ris.id });
+    check(await B.none((m) => m.type === "sound_played", 500), "Soundpad: intervalo mínimo entre sons");
+    await sleep(1200);
+    A.send({ type: "play_sound", sound: ris.id });
+    check((await B.wait((m) => m.type === "sound_played")).sound === ris.id, "Soundpad: som do servidor toca");
+    A.send({ type: "play_sound", sound: "builtin:naoexiste" });
+    check((await A.error()) === "Som não encontrado", "Soundpad: som inexistente recusado");
+    A.send({ type: "voice_leave" });
+    await sleep(500);
+  }
+  A.send({ type: "delete_sound", sound_id: ris.id });
+  await B.wait((m) => m.type === "sounds_changed");
+  check((await fetch(base + ris.url)).status === 404, "Soundpad: som apagado some");
+}
+
 // ---------- convite, admin, eliminação ----------
 A.send({ type: "regenerate_invite", server_id: priv.id });
 const newInv = (await A.wait((m) => m.type === "server_updated" && m.server.invite_code !== priv.invite_code)).server.invite_code;
@@ -287,6 +492,11 @@ A.send({ type: "delete_my_data" });
 await A.wait(type("data_deleted"));
 const heir = (await B.wait((m) => m.type === "server_updated" && m.server.id === priv.id && m.server.role === "owner")).server;
 check(heir.can_manage, "ao apagar os dados do dono, o servidor passa para o moderador");
+
+B.send({ type: "delete_my_data" });
+await B.wait(type("data_deleted"));
+check((await fetch(base + attUrl)).status === 404, "ao apagar os dados, as imagens da pessoa somem junto");
+check((await fetch(base + keptSoundUrl)).status === 404, "ao apagar os dados, os sons enviados pela pessoa somem junto");
 
 for (const c of [B, C, D, E]) c.ws.close();
 console.log(failures ? `\n${failures} falha(s)` : "\nTudo certo");

@@ -80,18 +80,25 @@ function shortTime(ts) {
   return new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
-// Transforma URLs em links sem usar innerHTML (evita XSS).
+// Transforma URLs em links e <@id> em menções, sem usar innerHTML (evita XSS).
 function renderContent(text) {
   const frag = document.createDocumentFragment();
-  const re = /https?:\/\/[^\s<]+/g;
+  const re = /(https?:\/\/[^\s<]+)|<@([0-9a-f-]{36})>/g;
   let last = 0;
   for (const m of text.matchAll(re)) {
     frag.append(text.slice(last, m.index));
-    const a = el("a", null, m[0]);
-    a.href = m[0];
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    frag.append(a);
+    if (m[1]) {
+      const a = el("a", null, m[1]);
+      a.href = m[1];
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      frag.append(a);
+    } else {
+      const u = typeof userById === "function" ? userById(m[2]) : null;
+      const pill = el("span", m[2] === state.me?.id ? "mention me" : "mention", `@${u?.name ?? "desconhecido"}`);
+      if (u) pill.onclick = (e) => userMenu(e, u);
+      frag.append(pill);
+    }
     last = m.index + m[0].length;
   }
   frag.append(text.slice(last));
@@ -110,6 +117,35 @@ function toast(msg, ok) {
 
 function show(sel) { $(sel).classList.remove("hidden"); }
 function hide(sel) { $(sel).classList.add("hidden"); }
+
+/**
+ * Toque longo (celular): chama `handler` com um evento cujo currentTarget é o elemento.
+ * No Android o navegador já gera "contextmenu"; isto cobre o iOS.
+ */
+function longPress(target, handler, ms = 480) {
+  let timer = null;
+  let start = null;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  target.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return cancel();
+    start = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    const t = e.target;
+    timer = setTimeout(() => {
+      timer = null;
+      target.dataset.longPressed = "1";
+      setTimeout(() => delete target.dataset.longPressed, 600);
+      handler({ target: t, currentTarget: target, preventDefault() {}, stopPropagation() {} });
+    }, ms);
+  }, { passive: true });
+  target.addEventListener("touchmove", (e) => {
+    if (start && Math.hypot(e.touches[0].clientX - start.x, e.touches[0].clientY - start.y) > 10) cancel();
+  }, { passive: true });
+  target.addEventListener("touchend", cancel);
+  target.addEventListener("touchcancel", cancel);
+  // Evita o clique (e o menu nativo do Android) logo depois do toque longo.
+  target.addEventListener("click", (e) => { if (target.dataset.longPressed) { e.stopPropagation(); e.preventDefault(); } }, true);
+  target.addEventListener("contextmenu", (e) => { if (target.dataset.longPressed) e.preventDefault(); });
+}
 
 async function copyText(text, input) {
   try {
@@ -256,6 +292,10 @@ const ICONS = {
   hangup: "M10.7 13.3a16 16 0 0 0 3 2.3l1.3-1.3a2 2 0 0 1 2.1-.4c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.5 4.2 2 2 0 0 1 4.5 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.4 2.1L8.4 9.7M23 1 1 23",
   edit: "M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4z",
   copy: "M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+  smile: "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01",
+  reply: "M9 17l-5-5 5-5M20 18v-2a4 4 0 0 0-4-4H4",
+  more: "M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
+  image: "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM21 15l-5-5L5 21",
 };
 
 function icon(name, cls = "mi-icon") {
@@ -351,6 +391,7 @@ const state = {
   voiceEnabled: false,
   focus: null, // { server_id, channel_id } pedido pelo servidor
   collapsed: new Set(load("concord.collapsed", [])), // categorias recolhidas: "servidor:tipo"
+  mentionCounts: new Map(), // channelId -> menções a mim ainda não vistas
 };
 let ws = null;
 let reconnect = true;
@@ -397,6 +438,9 @@ function connect() {
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
     if (!reconnect) return;
+    // Som só na primeira queda (não a cada tentativa).
+    if (state.me && !state.offline) playSfx("disconnect");
+    state.offline = true;
     setStatus("Sem conexão com o servidor — tentando reconectar…");
     setTimeout(connect, 1500);
   };
@@ -438,6 +482,9 @@ function handle(m) {
       state.loadingOlder.clear();
       state.reports.clear();
       setStatus(null);
+      if (state.offline) playSfx("reconnect");
+      state.offline = false;
+      sp.lists.clear();
       for (const s of state.servers) if (s.can_moderate) send({ type: "fetch_reports", server_id: s.id });
       if (pendingInvite) {
         send({ type: "join_server", code: pendingInvite });
@@ -472,15 +519,62 @@ function handle(m) {
       const list = state.messages.get(msg.channel_id);
       if (list) list.push(msg);
       state.typing.get(msg.channel_id)?.delete(msg.author.id);
+      if (msg.author.id !== state.me?.id && (mentionsMe(msg) || msg.reply_to?.author?.id === state.me?.id)) playSfx("notify");
       if (msg.channel_id === state.channelId) {
         renderMessages(msg.author.id === state.me?.id ? "bottom" : "auto");
         renderTyping();
       } else {
         state.unread.add(msg.channel_id);
+        // Menção a mim em outro canal: contador vermelho no canal e no servidor.
+        if (msg.author.id !== state.me?.id && mentionsMe(msg)) {
+          state.mentionCounts.set(msg.channel_id, (state.mentionCounts.get(msg.channel_id) ?? 0) + 1);
+          renderServers();
+        }
         renderChannels();
       }
       break;
     }
+
+    case "message_edited": {
+      const msg = state.messages.get(m.channel_id)?.find((x) => x.id === m.message_id);
+      if (!msg) break;
+      msg.content = m.content;
+      msg.edited_at = m.edited_at;
+      if (m.channel_id === state.channelId) renderMessages("keep");
+      break;
+    }
+
+    case "reaction_update": {
+      const msg = state.messages.get(m.channel_id)?.find((x) => x.id === m.message_id);
+      if (!msg) break;
+      let r = msg.reactions.find((x) => x.emoji === m.emoji);
+      if (m.on) {
+        if (!r) msg.reactions.push((r = { emoji: m.emoji, users: [] }));
+        if (!r.users.includes(m.user_id)) r.users.push(m.user_id);
+      } else if (r) {
+        r.users = r.users.filter((u) => u !== m.user_id);
+        if (r.users.length === 0) msg.reactions = msg.reactions.filter((x) => x !== r);
+      }
+      if (m.channel_id === state.channelId) renderMessages("keep");
+      break;
+    }
+
+    case "upload_token":
+      if (m.kind === "sound") onSoundUploadToken(m);
+      else onUploadToken(m);
+      break;
+
+    case "sounds":
+      onSounds(m);
+      break;
+
+    case "sounds_changed":
+      onSoundsChanged(m);
+      break;
+
+    case "sound_played":
+      onSoundPlayed(m);
+      break;
 
     case "message_deleted": {
       const list = state.messages.get(m.channel_id);
@@ -792,6 +886,7 @@ function userSettingsDef() {
       { label: "Configurações do usuário", items: [
         { id: "account", label: "Minha conta", render: renderAccountSettings },
         { id: "voice", label: "Voz e vídeo", render: renderVoiceSettingsSection },
+        { id: "sounds", label: "Sons", render: renderSoundSettings },
       ] },
       { label: "Privacidade", items: [
         { id: "privacy", label: "Privacidade e dados", render: renderPrivacySettings },
@@ -1219,11 +1314,63 @@ function selectServer(id) {
 function selectChannel(id) {
   state.channelId = id;
   state.unread.delete(id);
+  state.mentionCounts.delete(id);
+  clearComposer(); // resposta e imagens pendentes pertencem ao canal anterior
   store(`concord.lastChannel.${state.serverId}`, id);
   refresh();
   // Como no Discord: clicar num canal de voz já entra na chamada.
   if (currentChannel()?.kind === "voice") voiceJoin(id);
-  else $("#input").focus();
+  else if (!isMobile()) $("#input").focus(); // no celular, não abre o teclado sozinho
+  setDrawer(null);
+}
+
+// ---------- celular: gavetas (docs/DESIGN.md › Celular) ----------
+const mobileQuery = window.matchMedia("(max-width: 760px)");
+const narrowQuery = window.matchMedia("(max-width: 1000px)");
+const isMobile = () => mobileQuery.matches;
+
+/** "nav" (servidores e canais), "members" ou null. Só vale em telas estreitas. */
+function setDrawer(which) {
+  if (which === "nav" && !isMobile()) which = null;
+  if (which === "members" && !narrowQuery.matches) which = null;
+  document.body.classList.toggle("nav-open", which === "nav");
+  document.body.classList.toggle("members-open", which === "members");
+}
+
+$("#nav-toggle").onclick = () => setDrawer(document.body.classList.contains("nav-open") ? null : "nav");
+$("#members-toggle").onclick = () => {
+  if (narrowQuery.matches) return setDrawer(document.body.classList.contains("members-open") ? null : "members");
+  // Tela larga: mostra/esconde a coluna, como no Discord.
+  const hidden = document.body.classList.toggle("members-hidden");
+  store("concord.membersHidden", hidden);
+};
+document.body.classList.toggle("members-hidden", load("concord.membersHidden", false));
+$("#scrim").onclick = () => setDrawer(null);
+mobileQuery.addEventListener("change", () => setDrawer(null));
+narrowQuery.addEventListener("change", () => setDrawer(null));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && (document.body.classList.contains("nav-open") || document.body.classList.contains("members-open"))) setDrawer(null);
+});
+
+// Deslizar: da esquerda abre os canais; para a esquerda abre os membros (ou fecha a gaveta).
+{
+  let sx = 0, sy = 0, tracking = false;
+  $("#app").addEventListener("touchstart", (e) => {
+    tracking = narrowQuery.matches && e.touches.length === 1
+      && !e.target.closest("input, textarea, .upload-chips, .vv-grid, .attachments, .menu, .soundpad");
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  }, { passive: true });
+  $("#app").addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+    const body = document.body.classList;
+    if (dx > 0) setDrawer(body.contains("members-open") ? null : "nav");
+    else setDrawer(body.contains("nav-open") ? null : "members");
+  }, { passive: true });
 }
 
 // ---------- renderização ----------
@@ -1234,10 +1381,15 @@ function renderServers() {
     const b = el("button", "server-icon" + (s.id === state.serverId ? " active" : ""), initials(s.name));
     const pending = s.can_moderate ? state.reports.get(s.id)?.length ?? 0 : 0;
     b.title = s.name + (s.public ? " (público)" : " (privado)") + (pending ? ` — ${pending} denúncia(s)` : "");
-    if (!s.public) b.append(el("span", "lock", "🔒"));
+    const mentions = s.channels.reduce((n, c) => n + (state.mentionCounts.get(c.id) ?? 0), 0);
+    if (mentions) b.append(el("span", "ping", String(mentions)));
+    else if (!s.public) b.append(el("span", "lock", "🔒"));
     b.onclick = () => selectServer(s.id);
     list.append(b);
   }
+  const totalMentions = [...state.mentionCounts.values()].reduce((a, b) => a + b, 0);
+  $("#nav-ping").textContent = String(totalMentions);
+  $("#nav-ping").classList.toggle("hidden", totalMentions === 0);
 }
 
 const ICON_MIC_OFF = "🔇";
@@ -1289,6 +1441,8 @@ function channelItem(server, c) {
   row.classList.add(c.kind === "voice" ? "voice" : "text");
   const name = el("span", "ch-name", c.name);
   row.append(name);
+  const mentions = state.mentionCounts.get(c.id);
+  if (mentions) row.append(el("span", "ch-ping", String(mentions)));
   if (c.kind === "voice" && c.user_limit) {
     // Pílula "pessoas | limite".
     const n = (state.voiceStates.get(server.id) ?? []).filter((s) => s.channel_id === c.id).length;
@@ -1422,8 +1576,12 @@ function renderMessages(scroll) {
       div.setAttribute("role", "separator");
       box.append(div);
     }
-    const grouped = !newDay && prev && prev.author.id === m.author.id && m.timestamp - prev.timestamp < 5 * 60 * 1000;
+    // Respostas nunca são agrupadas: a prévia precisa do cabeçalho.
+    const grouped = !newDay && !m.reply_to && prev && prev.author.id === m.author.id && m.timestamp - prev.timestamp < 5 * 60 * 1000;
     const row = el("div", grouped ? "msg grouped" : "msg");
+    row.dataset.mid = m.id;
+    if (mentionsMe(m) || (m.reply_to?.author?.id === state.me?.id && m.author.id !== state.me?.id)) row.classList.add("mentioned");
+    if (m.reply_to) row.prepend(replyPreviewEl(m));
     const body = el("div", "msg-body");
 
     if (grouped) {
@@ -1443,18 +1601,29 @@ function renderMessages(scroll) {
       body.append(head);
     }
 
-    const content = el("div", "msg-content");
-    content.append(renderContent(m.content));
-    body.append(content);
-    row.append(body);
-
-    const mine = m.author.id === state.me?.id;
-    const actions = el("div", "msg-actions");
-    if (!mine) actions.append(button("Denunciar", null, () => reportMessage(m)));
-    if (mine || server?.can_moderate) {
-      actions.append(button("Apagar", "danger", () => send({ type: "delete_message", channel_id: m.channel_id, message_id: m.id })));
+    if (editing === m.id) {
+      body.append(editorEl(m));
+    } else if (m.content) {
+      const content = el("div", "msg-content");
+      content.append(renderContent(m.content));
+      if (m.edited_at) {
+        const tag = el("span", "edited", "(editado)");
+        tag.title = `Editado em ${formatTime(m.edited_at)}`;
+        content.append(" ", tag);
+      }
+      body.append(content);
     }
-    row.append(actions);
+    if (m.attachments?.length) body.append(attachmentsEl(m));
+    if (m.reactions?.length) body.append(reactionsEl(m));
+    row.append(body);
+    row.append(messageActionsEl(m, server));
+    const openMsgMenu = (e) => {
+      if (e.target.closest("a, .att-img, textarea, .reaction")) return;
+      e.preventDefault();
+      messageMenu(e, m, server);
+    };
+    row.oncontextmenu = openMsgMenu;
+    longPress(row, openMsgMenu);
 
     box.append(row);
     prev = m;
@@ -1559,37 +1728,7 @@ function renderMe() {
 $("#me-info").onclick = () => openSettings("user", "account");
 $("#me-avatar").onclick = () => openSettings("user", "account");
 
-const input = $("#input");
-let lastTypingSent = 0;
-
-function autosize() {
-  input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 200) + "px";
-}
-
-input.addEventListener("input", () => {
-  autosize();
-  const now = Date.now();
-  if (input.value.trim() && now - lastTypingSent > 2500 && state.channelId) {
-    lastTypingSent = now;
-    send({ type: "typing", channel_id: state.channelId });
-  }
-});
-
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    const content = input.value.trim();
-    if (!content || !state.channelId) return;
-    send({ type: "send_message", channel_id: state.channelId, content });
-    input.value = "";
-    lastTypingSent = 0;
-    autosize();
-  }
-});
-
-$("#composer").onsubmit = (e) => e.preventDefault();
-
+// O compositor (envio, imagens, menções, emojis) fica em chat.js.
 setInterval(renderTyping, 1000);
 
 // ---------- início ----------

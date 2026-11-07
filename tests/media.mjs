@@ -55,7 +55,7 @@ async function person(ctx, secret, name) {
   page.on("pageerror", (e) => console.log(`[${name}] erro na página: ${e.message}`));
   await page.evaluateOnNewDocument((secret, name) => {
     try {
-      localStorage.setItem("concord.identity", JSON.stringify({ secret, name, color: "#3ba55c", consent: 3 }));
+      localStorage.setItem("concord.identity", JSON.stringify({ secret, name, color: "#3ba55c", consent: 5 }));
     } catch {}
   }, secret, name);
   await page.goto(BASE);

@@ -11,6 +11,27 @@ cargo run --release
 
 Abra http://localhost:3000. Outras pessoas na mesma rede acessam por `http://SEU-IP:3000`.
 
+## Chat
+
+- Reações com emoji, edição das próprias mensagens, respostas com prévia e menções (@apelido) com
+  aviso e contador vermelho
+- Imagens por botão, colar ou arrastar (PNG, JPEG, GIF, WebP, até 8 MB). Os metadados, como a
+  localização da foto, são removidos no navegador e de novo no servidor. As imagens só abrem por
+  links assinados que expiram
+- Seletor de emoji com busca em português e visualizador de imagens
+- **Funciona no celular:** gavetas com deslize, toque longo nas mensagens e barra de controles da chamada
+
+## Sons e Soundpad
+
+- Efeitos sonoros ao enviar mensagem, receber menção, entrar e sair da chamada, alguém entrar ou
+  sair, mutar, transmitir, e quando a conexão cai e volta. Cada um pode ser desligado em
+  Configurações › Sons
+- **Soundpad:** no canal de voz, botão "Sons". Todos na chamada ouvem. Há 10 sons padrão e cada
+  servidor pode ter até 48 sons próprios (de até 5 s), adicionados pela moderação. Favoritos,
+  recentes, busca e volume próprio ficam só no navegador
+
+Todos os efeitos e sons padrão são sintetizados no navegador, sem arquivos de áudio.
+
 **Servidor de verdade, grátis:** veja [deploy/README.md](deploy/README.md). Ele usa Oracle Cloud
 (São Paulo), DuckDNS e um único script, que configura HTTPS, voz, firewall e backup.
 
@@ -225,6 +246,10 @@ src/db.rs          todo o SQL: esquema, migrações e consultas
 src/legacy.rs      importação única do formato JSON antigo
 src/voice.rs       LiveKit: inicia o servidor local e assina os tokens de acesso
 static/voice.js    chamada de voz, câmera e transmissão de tela no navegador
+static/chat.js     compositor, menções, emoji, imagens, reações, respostas e edição
+static/sounds.js   efeitos sonoros e Soundpad (Web Audio)
+src/media.rs       limpeza de metadados de imagens e sons
+src/uploads.rs     rotas de envio e entrega de imagens e sons (links assinados)
 static/vendor/     SDK do LiveKit para navegador (Apache-2.0, integridade conferida)
 src/bench.rs       teste de carga
 src/model.rs       tipos, papéis e protocolo cliente/servidor

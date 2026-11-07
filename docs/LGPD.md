@@ -25,6 +25,13 @@ Registro das operações de tratamento (LGPD art. 37) e das medidas adotadas des
 | Status do canal de voz e quem o definiu | Titular | Informar o que acontece no canal | Consentimento | Banco; quem definiu **não é mostrado** | Apagado quando o canal esvazia |
 | IP na chamada | Conexão de mídia | Entregar áudio e vídeo | Necessário ao serviço | LiveKit, em memória, com log em nível "warn", sem IP de participante | Duração da chamada |
 | Preferências de voz (dispositivos, volumes, tecla) | Titular | Conforto | — | **Apenas no navegador** | Até limpar o navegador ou apagar os dados |
+| Edição de mensagem (só a data; sem histórico) | Titular | Mostrar "(editado)" | Consentimento | Servidor | Junto com a mensagem |
+| Respostas e menções (id da mensagem respondida; `<@id>` no texto) | Titular | Contexto da conversa | Consentimento | Servidor, dentro da mensagem | Junto com a mensagem |
+| Reações (mensagem, emoji, quem, quando) | Titular | Interação | Consentimento | Servidor; visível a quem vê o servidor | Junto com a mensagem; apagadas com os dados do titular |
+| Imagens (arquivo **sem metadados**, nome, tipo, tamanho, dimensões) | Titular | Compartilhar imagens no chat | Consentimento | Banco, entregue só por link assinado que expira (~24 h) | Junto com a mensagem; não usadas somem em 1 h |
+| Sons do Soundpad (WAV ≤ 5 s **sem metadados**, nome, emoji, quem enviou) | Moderação do servidor | Soundpad nos canais de voz | Consentimento | Banco; link assinado; **quem enviou não é mostrado** | Enquanto fizer parte do servidor; apagados com o servidor ou com os dados de quem enviou |
+| Som tocado (quem, qual, em qual canal) | Titular | Avisar a chamada | Consentimento | **Não é gravado**: só repassado ao servidor na hora | — |
+| Preferências de sons, favoritos e recentes do Soundpad, emojis recentes | Titular | Conforto | — | **Apenas no navegador** | Até limpar o navegador ou apagar os dados |
 | Silenciado/ensurdecido pela moderação | Moderador | Moderação de voz | Legítimo interesse | **Só em memória** (a ação fica no registro de moderação) | Até um moderador desfazer, o Concord reiniciar ou o titular apagar os dados |
 
 ### Teste de legítimo interesse (art. 10)
@@ -84,6 +91,11 @@ e dados de navegação.
 | Chamada que segue depois de fechar a aba | Se o chat não reconectar em 15 s, o LiveKit remove a pessoa da sala |
 | Exposição de terceiros na transmissão de tela | Aviso antes de transmitir; as transmissões só são baixadas por quem clica em "Assistir" |
 | LiveKit órfão após uma queda | Job Object do Windows encerra o LiveKit junto com o Concord |
+| Metadados escondidos em fotos (GPS, aparelho, data) | Removidos no navegador (nova codificação por canvas) e de novo no servidor (EXIF/XMP/IPTC/comentários em PNG, JPEG, GIF e WebP). Testado com um PNG com localização |
+| Metadados em áudio (autor, software, ID3/LIST) | O navegador converte o som para WAV PCM; o servidor só aceita WAV PCM 16 bits e **reconstrói** o arquivo só com os blocos de formato e áudio |
+| Envio de arquivo por terceiros ou sem permissão | Autorização de uso único (2 min) pedida pelo WebSocket; o segredo de identidade nunca vai na URL. Autorização de imagem não serve para som e vice-versa |
+| Links de imagens e sons copiados e espalhados | Links assinados (HMAC-SHA256, chave nova a cada execução), com validade de ~24 h e domínios separados (imagem ≠ som); `Cache-Control: private` |
+| Spam de sons na chamada | Só quem está na voz toca, no próprio canal; intervalo mínimo de 1,5 s; silenciados pela moderação não tocam; até 48 sons por servidor |
 | Dados guardados além do necessário | Limpeza automática a cada hora (arts. 15 e 16), em lotes que não travam o chat. A retenção usa a ordem cronológica dos ids UUIDv7 |
 
 ## 5. Pendências para colocar em produção

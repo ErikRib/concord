@@ -46,6 +46,7 @@ const voice = {
   channelId: null,
   serverId: null,
   connecting: false,
+  reconnecting: false,
   muted: load("concord.muted", false),
   deafened: false,
   pttDown: false,
@@ -122,6 +123,8 @@ async function onVoiceToken(m) {
     return;
   }
   voice.connecting = false;
+  playSfx("voice_join");
+  ensureSounds(m.server_id);
   for (const p of room.remoteParticipants.values()) {
     for (const pub of p.trackPublications.values()) autoSubscribe(pub, p);
   }
@@ -134,6 +137,7 @@ async function onVoiceToken(m) {
 
 async function voiceLeave() {
   const channel = voice.room ? voice.channelId : null;
+  if (channel) playSfx("voice_leave");
   await disconnectRoom();
   if (channel) send({ type: "voice_leave", channel_id: channel });
   renderVoiceAll();
@@ -150,6 +154,7 @@ function cleanupVoice() {
   voice.channelId = null;
   voice.serverId = null;
   voice.connecting = false;
+  voice.reconnecting = false;
   voice.speaking.clear();
   voice.watching.clear();
   voice.focus = null;
@@ -157,11 +162,13 @@ function cleanupVoice() {
   for (const v of voice.videoEls.values()) v.remove();
   voice.videoEls.clear();
   stopStats();
+  closeSoundpad();
   $("#voice-audio").replaceChildren();
 }
 
 /** O servidor encerrou a sessão (canal apagado, banimento etc.). */
 function onVoiceEnded(m) {
+  if (voice.room) playSfx("voice_leave");
   disconnectRoom().then(renderVoiceAll);
   toast(m.reason);
 }
@@ -198,12 +205,23 @@ function wireRoom(room) {
       voice.videoEls.delete(track.sid);
       renderVoiceAll();
     })
-    .on(E.ParticipantConnected, () => renderVoiceAll())
-    .on(E.ParticipantDisconnected, (p) => { voice.watching.delete(p.identity); renderVoiceAll(); })
+    .on(E.ParticipantConnected, () => { playSfx("user_join"); renderVoiceAll(); })
+    .on(E.ParticipantDisconnected, (p) => { voice.watching.delete(p.identity); playSfx("user_leave"); renderVoiceAll(); })
+    // Queda de rede: o LiveKit tenta reconectar sozinho.
+    .on(E.Reconnecting, () => { voice.reconnecting = true; playSfx("disconnect"); renderVoiceControls(); })
+    .on(E.Reconnected, () => { voice.reconnecting = false; playSfx("reconnect"); renderVoiceControls(); })
     .on(E.TrackMuted, () => renderVoiceAll())
     .on(E.TrackUnmuted, () => renderVoiceAll())
-    .on(E.LocalTrackPublished, () => { syncVoiceState(); renderVoiceAll(); })
-    .on(E.LocalTrackUnpublished, () => { syncVoiceState(); renderVoiceAll(); })
+    .on(E.LocalTrackPublished, (pub) => {
+      if (pub.source === SRC.ScreenShare) playSfx("stream", true);
+      syncVoiceState();
+      renderVoiceAll();
+    })
+    .on(E.LocalTrackUnpublished, (pub) => {
+      if (pub.source === SRC.ScreenShare) playSfx("stream", false);
+      syncVoiceState();
+      renderVoiceAll();
+    })
     .on(E.ActiveSpeakersChanged, (speakers) => {
       voice.speaking = new Set(speakers.map((s) => s.identity));
       updateSpeaking();
@@ -217,6 +235,7 @@ function wireRoom(room) {
       cleanupVoice();
       // Com o canal: se fomos movidos nesse meio-tempo, o servidor não nos tira do novo.
       send({ type: "voice_leave", channel_id: channel });
+      playSfx("voice_leave");
       toast("Você foi desconectado da voz");
       renderVoiceAll();
     });
@@ -287,6 +306,7 @@ async function toggleMute() {
     voice.muted = !voice.muted;
   }
   store("concord.muted", voice.muted);
+  playSfx("mute", voice.muted);
   await applyMic();
   voice.room?.remoteParticipants.forEach(applyVolume);
   syncVoiceState();
@@ -295,6 +315,7 @@ async function toggleMute() {
 
 async function toggleDeafen() {
   voice.deafened = !voice.deafened;
+  playSfx("deafen", voice.deafened);
   await applyMic();
   voice.room?.remoteParticipants.forEach(applyVolume);
   syncVoiceState();
@@ -612,12 +633,15 @@ function renderVoiceControls() {
   $("#voice-panel").classList.toggle("hidden", !room && !voice.connecting);
   const server = state.servers.find((s) => s.id === voice.serverId);
   const ch = server?.channels.find((c) => c.id === voice.channelId);
-  $("#vp-status").textContent = voice.connecting ? "Conectando…" : voice.pttDown ? "Voz conectada · falando" : "Voz conectada";
+  $("#vp-status").textContent = voice.connecting ? "Conectando…" : voice.reconnecting ? "Reconectando…" : voice.pttDown ? "Voz conectada · falando" : "Voz conectada";
   $("#vp-where").textContent = ch ? `${ch.name} / ${server.name}` : "";
   const lp = room?.localParticipant;
   $("#vp-camera").classList.toggle("active", !!lp?.isCameraEnabled);
   $("#vp-screen").classList.toggle("active", !!lp?.isScreenShareEnabled);
   $("#vp-screen span").textContent = lp?.isScreenShareEnabled ? "Parar" : "Tela";
+  $("#voice-panel").classList.toggle("reconnecting", voice.reconnecting);
+  $("#vp-soundpad").classList.toggle("active", !!sp.pad);
+  updateCallBar();
   const mod = room ? myServerMute() : { muted: false, deafened: false };
   const mute = $("#btn-mute");
   mute.classList.toggle("off", voice.muted || voice.deafened || mod.muted || mod.deafened);
@@ -785,7 +809,67 @@ function renderVoiceView() {
     stage.append(grid);
   }
   view.append(stage);
+  view.append(callBar());
   updateSpeaking();
+  renderVoiceControls();
+}
+
+// ---------- barra de controles da chamada (essencial no celular) ----------
+Object.assign(ICONS, {
+  mic: "M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4",
+  micOff: "M1 1l22 22M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V4a3 3 0 0 0-5.9-.6M17 16.9A7 7 0 0 1 5 12v-2m14 0v2c0 .8-.1 1.5-.4 2.2M12 19v4",
+  headset: "M3 18v-6a9 9 0 0 1 18 0v6M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z",
+  headsetOff: "M1 1l22 22M3 18v-6a9 9 0 0 1 14.5-7.1M21 12v6M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z",
+  camera: "M23 7l-7 5 7 5zM3 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z",
+  screen: "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 21h8M12 17v4",
+});
+const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia;
+
+function callBar() {
+  const bar = el("div", "vv-controls");
+  const btn = (act, title, onClick, cls = "") => {
+    const b = el("button", `cb-btn ${cls}`.trim());
+    b.type = "button";
+    b.dataset.act = act;
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    b.onclick = (e) => { e.stopPropagation(); onClick(e); };
+    return b;
+  };
+  bar.append(
+    btn("mic", "Microfone", toggleMute),
+    btn("deaf", "Áudio", toggleDeafen),
+    btn("camera", "Câmera", toggleCamera),
+  );
+  if (canShareScreen) bar.append(btn("screen", "Transmitir tela", toggleScreenShare));
+  bar.append(
+    btn("sounds", "Soundpad", (e) => openSoundpad(e.currentTarget)),
+    btn("leave", "Desconectar", voiceLeave, "danger"),
+  );
+  return bar;
+}
+
+/** Atualiza ícones e estados da barra (chamado junto com o painel de voz). */
+function updateCallBar() {
+  const bar = document.querySelector(".vv-controls");
+  if (!bar) return;
+  const mod = voice.room ? myServerMute() : { muted: false, deafened: false };
+  const lp = voice.room?.localParticipant;
+  const micOff = voice.muted || voice.deafened || mod.muted || mod.deafened;
+  const deafOff = voice.deafened || mod.deafened;
+  const set = (act, iconName, on, off) => {
+    const b = bar.querySelector(`[data-act="${act}"]`);
+    if (!b) return;
+    b.replaceChildren(icon(iconName, "cb-icon"));
+    b.classList.toggle("on", !!on);
+    b.classList.toggle("off", !!off);
+  };
+  set("mic", micOff ? "micOff" : "mic", false, micOff);
+  set("deaf", deafOff ? "headsetOff" : "headset", false, deafOff);
+  set("camera", "camera", lp?.isCameraEnabled, false);
+  set("screen", "screen", lp?.isScreenShareEnabled, false);
+  set("sounds", "music", !!sp.pad, false);
+  set("leave", "hangup", false, false);
 }
 
 // ---------- ligações com a interface ----------
@@ -795,5 +879,6 @@ $("#btn-voice-settings").onclick = () => openSettings("user", "account");
 $("#vp-leave").onclick = voiceLeave;
 $("#vp-camera").onclick = toggleCamera;
 $("#vp-screen").onclick = toggleScreenShare;
+if (!canShareScreen) $("#vp-screen").classList.add("hidden"); // navegadores de celular não transmitem tela
 window.addEventListener("beforeunload", () => voice.room?.disconnect());
 renderVoiceControls();

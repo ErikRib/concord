@@ -2,8 +2,10 @@ mod bench;
 mod commands;
 mod db;
 mod legacy;
+mod media;
 mod model;
 mod state;
+mod uploads;
 mod voice;
 mod ws;
 
@@ -12,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::Request;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::{header, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -148,6 +150,44 @@ async fn main() {
                 )
             }),
         )
+        // Imagens do chat: envio com autorização de uso único e entrega com link assinado.
+        .route(
+            "/anexos/:id",
+            get(uploads::serve)
+                .post(uploads::upload)
+                .layer(DefaultBodyLimit::max(
+                    state::MAX_UPLOAD_BYTES as usize + 1024,
+                )),
+        )
+        .route(
+            "/sons/:id",
+            get(uploads::serve_sound)
+                .post(uploads::upload_sound)
+                .layer(DefaultBodyLimit::max(
+                    state::MAX_SOUND_BYTES as usize + 1024,
+                )),
+        )
+        .route(
+            "/sounds.js",
+            get(|| async {
+                asset(
+                    "application/javascript",
+                    include_str!("../static/sounds.js"),
+                )
+            }),
+        )
+        .route(
+            "/chat.js",
+            get(|| async { asset("application/javascript", include_str!("../static/chat.js")) }),
+        )
+        .route(
+            "/favicon.svg",
+            get(|| async { asset("image/svg+xml", include_str!("../static/favicon.svg")) }),
+        )
+        .route(
+            "/favicon.ico",
+            get(|| async { asset("image/svg+xml", include_str!("../static/favicon.svg")) }),
+        )
         .route("/ws", get(ws::ws_handler))
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
@@ -180,8 +220,8 @@ static CSP: std::sync::OnceLock<HeaderValue> = std::sync::OnceLock::new();
 /// CSP restritiva; a única origem externa liberada é a do LiveKit (voz).
 fn build_csp(livekit_sources: String) -> HeaderValue {
     let csp = format!(
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
-         media-src 'self' blob:; connect-src 'self' {livekit_sources}; object-src 'none'; \
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; \
+         media-src 'self' blob: data:; connect-src 'self' {livekit_sources}; object-src 'none'; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     );
     HeaderValue::from_str(&csp).unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'"))
@@ -223,7 +263,10 @@ async fn security_headers(req: Request, next: Next) -> Response {
         "cross-origin-opener-policy",
         HeaderValue::from_static("same-origin"),
     );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    // Sem cache por padrão; respostas com política própria (imagens) a mantêm.
+    if !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
     res
 }
 

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Política de Privacidade · Concord</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body class="policy-page">
@@ -15,9 +16,11 @@
     <p>Esta política explica, em linguagem simples, como o Concord trata dados pessoais, em conformidade com a
       Lei Geral de Proteção de Dados (Lei nº 13.709/2018, “LGPD”).</p>
 
-    <h2>O que mudou na versão 3</h2>
-    <p>Incluímos <strong>canais de voz</strong>, com microfone, câmera e transmissão de tela. O item 2A explica
-      como isso funciona. A versão 2 incluiu servidores privados, moderação, denúncias e banimentos.</p>
+    <h2>O que mudou na versão 5</h2>
+    <p>Incluímos o <strong>Soundpad</strong> (sons curtos que a moderação adiciona ao servidor e que podem ser
+      tocados nos canais de voz) e <strong>efeitos sonoros</strong> da interface. O item 2C explica como funciona.
+      A versão 4 incluiu imagens, reações, respostas, menções e edição; a versão 3, os canais de voz; a versão 2,
+      servidores privados, moderação, denúncias e banimentos.</p>
 
     <h2>1. Quem é o responsável</h2>
     <p><strong>Controlador:</strong> {{CONTROLADOR}}<br>
@@ -29,7 +32,10 @@
       <li><strong>Apelido e cor</strong> escolhidos por você;</li>
       <li><strong>Identificador pseudônimo</strong>, calculado a partir de um código aleatório gerado e guardado
         apenas no seu navegador;</li>
-      <li><strong>Mensagens</strong> que você envia, com data e hora;</li>
+      <li><strong>Mensagens</strong> que você envia, com data e hora (e a data da última edição, se houver);</li>
+      <li><strong>Imagens</strong> que você envia, com nome do arquivo, tipo e tamanho;</li>
+      <li><strong>Reações</strong> que você coloca em mensagens (qual emoji e quando);</li>
+      <li><strong>Sons do Soundpad</strong> que você adiciona a um servidor (áudio de até 5 segundos, nome, emoji e data);</li>
       <li><strong>Participação em servidores</strong>: de quais você é membro e seu papel (dono, moderador ou membro);</li>
       <li><strong>Denúncias</strong> que você faz (motivo, detalhes e data);</li>
       <li><strong>Banimentos</strong> que você receber (servidor, motivo e data);</li>
@@ -41,6 +47,38 @@
       Não usamos cookies, rastreadores, publicidade nem perfilamento.</p>
     <p><strong>Atenção:</strong> evite escrever dados pessoais sensíveis (saúde, religião, opinião política etc.)
       ou dados de outras pessoas nas mensagens. Tudo o que você escreve fica visível para quem participa do servidor.</p>
+
+    <h2>2B. Imagens, reações, respostas e edição</h2>
+    <ul>
+      <li><strong>Metadados removidos:</strong> fotos costumam carregar dados escondidos, como a <em>localização
+        exata</em> onde foram tiradas, o modelo do aparelho e a data. O Concord remove esses metadados (EXIF, XMP,
+        IPTC e comentários) no seu navegador antes do envio e de novo no servidor;</li>
+      <li>As imagens ficam guardadas junto com a mensagem e só são entregues por <strong>links assinados que
+        expiram em cerca de 24 horas</strong>, gerados apenas para quem participa do servidor;</li>
+      <li>Ao apagar a mensagem, o canal, o servidor ou os seus dados, as imagens são apagadas junto. Elas também
+        seguem o prazo de retenção. Imagens enviadas e não usadas numa mensagem somem em 1 hora;</li>
+      <li><strong>Reações</strong> mostram para o servidor quem reagiu com qual emoji;</li>
+      <li><strong>Edição:</strong> guardamos só a versão atual da mensagem e a data da edição, sem histórico;</li>
+      <li><strong>Menções</strong> (@apelido) e <strong>respostas</strong> ficam no conteúdo da mensagem. Ao responder,
+        um trecho da mensagem original aparece como prévia;</li>
+      <li>Evite enviar imagens com dados pessoais de outras pessoas (documentos, conversas, rostos sem
+        autorização).</li>
+    </ul>
+
+    <h2>2C. Soundpad e efeitos sonoros</h2>
+    <ul>
+      <li>Só quem modera o servidor adiciona sons. O áudio é <strong>convertido no seu navegador</strong> (WAV de até
+        5 segundos) e o servidor reconstrói o arquivo descartando metadados (autor, software, datas);</li>
+      <li>Os sons ficam no servidor em que foram adicionados e são entregues por <strong>links assinados que expiram</strong>.
+        A lista de sons <strong>não mostra quem enviou</strong> cada um;</li>
+      <li>Tocar um som avisa às pessoas do servidor qual som você tocou, no canal de voz em que você está. Isso
+        <strong>não é gravado</strong>;</li>
+      <li>Os sons são apagados quando a moderação os remove, quando o servidor é apagado ou quando você apaga seus
+        dados (os que você enviou). Eles não seguem o prazo de retenção das mensagens: ficam enquanto fizerem parte
+        do servidor;</li>
+      <li>Não envie gravações com a voz de outras pessoas sem autorização;</li>
+      <li>Efeitos sonoros, volume e favoritos do Soundpad são gerados e guardados <strong>só no seu navegador</strong>.</li>
+    </ul>
 
     <h2>2A. Canais de voz, câmera e transmissão de tela</h2>
     <ul>
@@ -98,6 +136,7 @@
       <li>O registro de aceite é apagado quando você fica {{RETENCAO_DIAS}} dias sem acessar e não tem mais
         mensagens guardadas;</li>
       <li>Quando um servidor ou canal é apagado, as mensagens dele são eliminadas na hora;</li>
+      <li>Sons do Soundpad ficam enquanto fizerem parte do servidor (veja o item 2C);</li>
       <li>Ao usar “Apagar meus dados”, tudo é eliminado imediatamente (veja o item 8).</li>
     </ul>
 
@@ -136,7 +175,8 @@
 
     <h2>11. Armazenamento no seu navegador</h2>
     <p>Usamos o armazenamento local do navegador (<code>localStorage</code>) apenas para guardar seu código de
-      identificação, apelido, cor, aceite desta política e o último canal aberto. Esses dados não saem do seu
+      identificação, apelido, cor, aceite desta política, o último canal aberto e preferências (voz, sons,
+      emojis recentes e favoritos do Soundpad). Esses dados não saem do seu
       aparelho, exceto o apelido, a cor e o identificador derivado.</p>
 
     <h2>12. Mudanças nesta política</h2>

@@ -13,7 +13,8 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::model::{
-    Ban, Channel, ChannelKind, Message, ModLogEntry, Report, ReportView, Server, User,
+    AttachmentView, Ban, Channel, ChannelKind, Message, ModLogEntry, ReactionView, ReplyPreview,
+    Report, ReportView, Server, User,
 };
 
 const READERS: usize = 4;
@@ -150,6 +151,57 @@ const MIGRATIONS: &[&str] = &[
         SELECT randomblob(16), s.id, 'Geral',
                (SELECT COALESCE(MAX(position), 0) + 1 FROM channels c WHERE c.server_id = s.id), 'voice'
         FROM servers s;
+    "#,
+    // 3: edição, respostas, reações e imagens
+    r#"
+    ALTER TABLE messages ADD COLUMN edited_at INTEGER;
+    -- Sem chave estrangeira: a resposta continua existindo se a original for apagada.
+    ALTER TABLE messages ADD COLUMN reply_to BLOB;
+
+    CREATE TABLE reactions (
+        message_id BLOB NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        emoji      TEXT NOT NULL,
+        user_id    BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (message_id, emoji, user_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX reactions_user ON reactions(user_id);
+
+    -- Imagens ficam no banco: apagar a mensagem, o canal ou os dados do titular
+    -- (e a retenção) leva o arquivo junto. `data` é a última coluna para que as
+    -- consultas de metadados não precisem ler o conteúdo.
+    CREATE TABLE attachments (
+        id          BLOB PRIMARY KEY,
+        message_id  BLOB REFERENCES messages(id) ON DELETE CASCADE,
+        channel_id  BLOB NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        uploader_id BLOB NOT NULL,
+        filename    TEXT NOT NULL,
+        mime        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        width       INTEGER NOT NULL,
+        height      INTEGER NOT NULL,
+        created_at  INTEGER NOT NULL,
+        data        BLOB NOT NULL
+    );
+    CREATE INDEX attachments_message ON attachments(message_id);
+    CREATE INDEX attachments_uploader ON attachments(uploader_id);
+    CREATE INDEX attachments_pending ON attachments(created_at) WHERE message_id IS NULL;
+    "#,
+    // 4: Soundpad (sons curtos de cada servidor, tocados nos canais de voz).
+    r#"
+    CREATE TABLE sounds (
+        id          BLOB PRIMARY KEY,
+        server_id   BLOB NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+        uploader_id BLOB NOT NULL,
+        name        TEXT NOT NULL,
+        emoji       TEXT,
+        duration_ms INTEGER NOT NULL,
+        size        INTEGER NOT NULL,
+        created_at  INTEGER NOT NULL,
+        data        BLOB NOT NULL
+    );
+    CREATE INDEX sounds_server ON sounds(server_id, created_at);
+    CREATE INDEX sounds_uploader ON sounds(uploader_id);
     "#,
 ];
 
@@ -479,9 +531,218 @@ pub fn delete_ban(c: &Connection, server_id: Uuid, user_id: Uuid) -> rusqlite::R
 
 pub fn insert_message(c: &Connection, m: &Message) -> rusqlite::Result<()> {
     c.prepare_cached(
-        "INSERT INTO messages (id, channel_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO messages (id, channel_id, author_id, content, created_at, edited_at, reply_to)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?
-    .execute(params![m.id, m.channel_id, m.author.id, m.content, m.timestamp])?;
+    .execute(params![
+        m.id,
+        m.channel_id,
+        m.author.id,
+        m.content,
+        m.timestamp,
+        m.edited_at,
+        m.reply_to.as_ref().map(|r| r.id)
+    ])?;
+    Ok(())
+}
+
+/// Edição: guarda só a versão atual (sem histórico de edições).
+pub fn edit_message(c: &Connection, id: Uuid, content: &str, at: i64) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE messages SET content = ?2, edited_at = ?3 WHERE id = ?1",
+        params![id, content, at],
+    )? > 0)
+}
+
+/// Prévia da mensagem respondida (autor e trecho), se ainda existir.
+pub fn reply_preview(
+    c: &Connection,
+    channel_id: Uuid,
+    id: Uuid,
+) -> rusqlite::Result<Option<ReplyPreview>> {
+    c.query_row(
+        "SELECT m.author_id, COALESCE(u.name, 'Desconhecido'), COALESCE(u.color, '#5865f2'), m.content
+         FROM messages m LEFT JOIN users u ON u.id = m.author_id
+         WHERE m.id = ?1 AND m.channel_id = ?2",
+        params![id, channel_id],
+        |r| {
+            Ok(ReplyPreview {
+                id,
+                author: Some(User { id: r.get(0)?, name: r.get(1)?, color: r.get(2)? }),
+                excerpt: excerpt(&r.get::<_, String>(3)?),
+            })
+        },
+    )
+    .optional()
+}
+
+fn excerpt(s: &str) -> String {
+    let mut out: String = s.chars().take(120).collect();
+    if s.chars().count() > 120 {
+        out.push('…');
+    }
+    out
+}
+
+// ---------- reações ----------
+
+pub fn set_reaction(
+    c: &Connection,
+    message_id: Uuid,
+    user_id: Uuid,
+    emoji: &str,
+    on: bool,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    let n = if on {
+        c.execute(
+            "INSERT OR IGNORE INTO reactions (message_id, emoji, user_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![message_id, emoji, user_id, at],
+        )?
+    } else {
+        c.execute(
+            "DELETE FROM reactions WHERE message_id = ?1 AND emoji = ?2 AND user_id = ?3",
+            params![message_id, emoji, user_id],
+        )?
+    };
+    Ok(n > 0)
+}
+
+pub fn reaction_emoji_count(c: &Connection, message_id: Uuid) -> rusqlite::Result<usize> {
+    c.query_row(
+        "SELECT COUNT(DISTINCT emoji) FROM reactions WHERE message_id = ?1",
+        [message_id],
+        |r| r.get(0),
+    )
+}
+
+pub fn has_reaction(c: &Connection, message_id: Uuid, emoji: &str) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM reactions WHERE message_id = ?1 AND emoji = ?2)",
+        params![message_id, emoji],
+        |r| r.get(0),
+    )
+}
+
+// ---------- imagens ----------
+
+pub struct NewAttachment<'a> {
+    pub id: Uuid,
+    pub channel_id: Uuid,
+    pub uploader_id: Uuid,
+    pub filename: &'a str,
+    pub mime: &'a str,
+    pub width: u32,
+    pub height: u32,
+    pub data: &'a [u8],
+    pub created_at: i64,
+}
+
+/// Guarda uma imagem ainda sem mensagem (pendente até o envio).
+pub fn insert_attachment(c: &Connection, a: &NewAttachment) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO attachments (id, message_id, channel_id, uploader_id, filename, mime, size, width, height, created_at, data)
+         VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            a.id,
+            a.channel_id,
+            a.uploader_id,
+            a.filename,
+            a.mime,
+            a.data.len() as i64,
+            a.width,
+            a.height,
+            a.created_at,
+            a.data
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn count_pending_attachments(c: &Connection, uploader_id: Uuid) -> rusqlite::Result<usize> {
+    c.query_row(
+        "SELECT COUNT(*) FROM attachments WHERE uploader_id = ?1 AND message_id IS NULL",
+        [uploader_id],
+        |r| r.get(0),
+    )
+}
+
+/// Liga uma imagem pendente à mensagem. Só funciona se for de quem envia e do mesmo canal.
+pub fn link_attachment(
+    c: &Connection,
+    id: Uuid,
+    message_id: Uuid,
+    uploader_id: Uuid,
+    channel_id: Uuid,
+) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE attachments SET message_id = ?2
+         WHERE id = ?1 AND uploader_id = ?3 AND channel_id = ?4 AND message_id IS NULL",
+        params![id, message_id, uploader_id, channel_id],
+    )? > 0)
+}
+
+/// Conteúdo para servir. Só imagens já ligadas a uma mensagem.
+pub fn attachment_file(
+    c: &Connection,
+    id: Uuid,
+) -> rusqlite::Result<Option<(String, String, Vec<u8>)>> {
+    c.query_row(
+        "SELECT mime, filename, data FROM attachments WHERE id = ?1 AND message_id IS NOT NULL",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
+/// Imagens enviadas e nunca usadas numa mensagem (ex.: aba fechada) somem em 1 hora.
+pub fn purge_pending_attachments(c: &Connection, older_than_ms: i64) -> rusqlite::Result<usize> {
+    c.execute(
+        "DELETE FROM attachments WHERE message_id IS NULL AND created_at < ?1",
+        [older_than_ms],
+    )
+}
+
+/// Completa as mensagens com reações e imagens (a URL das imagens é assinada por quem chama).
+pub fn hydrate(
+    c: &Connection,
+    list: &mut [Message],
+    sign: &dyn Fn(Uuid) -> String,
+) -> rusqlite::Result<()> {
+    let mut reactions = c.prepare_cached(
+        "SELECT emoji, user_id FROM reactions WHERE message_id = ?1 ORDER BY created_at",
+    )?;
+    let mut attachments = c.prepare_cached(
+        "SELECT id, filename, mime, size, width, height FROM attachments WHERE message_id = ?1 ORDER BY created_at",
+    )?;
+    for m in list.iter_mut() {
+        let mut rows = reactions.query([m.id])?;
+        while let Some(r) = rows.next()? {
+            let emoji: String = r.get(0)?;
+            let user: Uuid = r.get(1)?;
+            match m.reactions.iter_mut().find(|x| x.emoji == emoji) {
+                Some(x) => x.users.push(user),
+                None => m.reactions.push(ReactionView {
+                    emoji,
+                    users: vec![user],
+                }),
+            }
+        }
+        m.attachments = attachments
+            .query_map([m.id], |r| {
+                let id: Uuid = r.get(0)?;
+                Ok(AttachmentView {
+                    id,
+                    url: sign(id),
+                    name: r.get(1)?,
+                    mime: r.get(2)?,
+                    size: r.get(3)?,
+                    width: r.get(4)?,
+                    height: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+    }
     Ok(())
 }
 
@@ -516,6 +777,29 @@ pub fn delete_user_messages_in_server(
 }
 
 fn message_from_row(r: &Row) -> rusqlite::Result<Message> {
+    let reply_id: Option<Uuid> = r.get(8)?;
+    let reply_to = match reply_id {
+        None => None,
+        Some(id) => {
+            let author_id: Option<Uuid> = r.get(9)?;
+            Some(match author_id {
+                Some(aid) => ReplyPreview {
+                    id,
+                    author: Some(User {
+                        id: aid,
+                        name: r.get(10)?,
+                        color: r.get(11)?,
+                    }),
+                    excerpt: excerpt(&r.get::<_, String>(12)?),
+                },
+                None => ReplyPreview {
+                    id,
+                    author: None,
+                    excerpt: String::new(),
+                },
+            })
+        }
+    };
     Ok(Message {
         id: r.get(0)?,
         channel_id: r.get(1)?,
@@ -526,11 +810,21 @@ fn message_from_row(r: &Row) -> rusqlite::Result<Message> {
         },
         content: r.get(5)?,
         timestamp: r.get(6)?,
+        edited_at: r.get(7)?,
+        reply_to,
+        reactions: vec![],
+        attachments: vec![],
     })
 }
 
+/// 13 colunas (0–12); consultas que acrescentam colunas começam no índice 13.
 const MESSAGE_COLUMNS: &str = "m.id, m.channel_id, m.author_id,
-     COALESCE(u.name, 'Desconhecido'), COALESCE(u.color, '#5865f2'), m.content, m.created_at";
+     COALESCE(u.name, 'Desconhecido'), COALESCE(u.color, '#5865f2'), m.content, m.created_at,
+     m.edited_at, m.reply_to, rm.author_id, COALESCE(ru.name, 'Desconhecido'),
+     COALESCE(ru.color, '#5865f2'), COALESCE(rm.content, '')";
+const MESSAGE_JOINS: &str = "LEFT JOIN users u ON u.id = m.author_id
+     LEFT JOIN messages rm ON rm.id = m.reply_to
+     LEFT JOIN users ru ON ru.id = rm.author_id";
 
 /// Página de histórico em ordem cronológica. Com `before`, devolve as mensagens
 /// anteriores a ela. Paginação por chave: o custo não cresce com a profundidade.
@@ -543,14 +837,14 @@ pub fn history(
     let mut list: Vec<Message> = match before {
         Some(b) => c
             .prepare_cached(&format!(
-                "SELECT {MESSAGE_COLUMNS} FROM messages m LEFT JOIN users u ON u.id = m.author_id
+                "SELECT {MESSAGE_COLUMNS} FROM messages m {MESSAGE_JOINS}
                  WHERE m.channel_id = ?1 AND m.id < ?2 ORDER BY m.id DESC LIMIT ?3"
             ))?
             .query_map(params![channel_id, b, limit as i64], message_from_row)?
             .collect::<Result<_, _>>()?,
         None => c
             .prepare_cached(&format!(
-                "SELECT {MESSAGE_COLUMNS} FROM messages m LEFT JOIN users u ON u.id = m.author_id
+                "SELECT {MESSAGE_COLUMNS} FROM messages m {MESSAGE_JOINS}
                  WHERE m.channel_id = ?1 ORDER BY m.id DESC LIMIT ?2"
             ))?
             .query_map(params![channel_id, limit as i64], message_from_row)?
@@ -624,19 +918,19 @@ pub fn reports_view(c: &Connection, server_id: Uuid) -> rusqlite::Result<Vec<Rep
          FROM reports r
          JOIN messages m ON m.id = r.message_id
          JOIN channels ch ON ch.id = r.channel_id
-         LEFT JOIN users u ON u.id = m.author_id
+         {MESSAGE_JOINS}
          WHERE r.server_id = ?1 ORDER BY r.created_at"
     ))?
     .query_map([server_id], |r| {
         let message = message_from_row(r)?;
         Ok(ReportView {
-            id: r.get(7)?,
+            id: r.get(13)?,
             channel_id: message.channel_id,
-            channel_name: r.get(8)?,
+            channel_name: r.get(14)?,
             message,
-            category: r.get(9)?,
-            details: r.get(10)?,
-            created_at: r.get(11)?,
+            category: r.get(15)?,
+            details: r.get(16)?,
+            created_at: r.get(17)?,
         })
     })?
     .collect()
@@ -654,9 +948,31 @@ pub fn log(c: &Connection, e: &ModLogEntry) -> rusqlite::Result<()> {
 
 // ---------- LGPD: exportação ----------
 
+pub struct ExportMessage {
+    pub id: Uuid,
+    pub server: String,
+    pub channel: String,
+    pub content: String,
+    pub at: i64,
+    pub edited_at: Option<i64>,
+    pub reply_to: Option<Uuid>,
+}
+
+pub struct ExportAttachment {
+    pub id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub filename: String,
+    pub mime: String,
+    pub size: i64,
+    pub at: i64,
+}
+
 pub struct ExportRows {
-    /// (id, servidor, canal, conteúdo, data)
-    pub messages: Vec<(Uuid, String, String, String, i64)>,
+    pub messages: Vec<ExportMessage>,
+    /// (mensagem, emoji, data)
+    pub reactions: Vec<(Uuid, String, i64)>,
+    pub attachments: Vec<ExportAttachment>,
+    pub sounds: Vec<ExportSound>,
     pub reports: Vec<Report>,
     pub mod_log: Vec<ModLogEntry>,
 }
@@ -664,11 +980,59 @@ pub struct ExportRows {
 pub fn export_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<ExportRows> {
     let messages = c
         .prepare(
-            "SELECT m.id, s.name, ch.name, m.content, m.created_at
+            "SELECT m.id, s.name, ch.name, m.content, m.created_at, m.edited_at, m.reply_to
              FROM messages m JOIN channels ch ON ch.id = m.channel_id JOIN servers s ON s.id = ch.server_id
              WHERE m.author_id = ?1 ORDER BY m.id",
         )?
-        .query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .query_map([uid], |r| {
+            Ok(ExportMessage {
+                id: r.get(0)?,
+                server: r.get(1)?,
+                channel: r.get(2)?,
+                content: r.get(3)?,
+                at: r.get(4)?,
+                edited_at: r.get(5)?,
+                reply_to: r.get(6)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let reactions = c
+        .prepare("SELECT message_id, emoji, created_at FROM reactions WHERE user_id = ?1 ORDER BY created_at")?
+        .query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let attachments = c
+        .prepare(
+            "SELECT id, message_id, filename, mime, size, created_at FROM attachments
+             WHERE uploader_id = ?1 ORDER BY created_at",
+        )?
+        .query_map([uid], |r| {
+            Ok(ExportAttachment {
+                id: r.get(0)?,
+                message_id: r.get(1)?,
+                filename: r.get(2)?,
+                mime: r.get(3)?,
+                size: r.get(4)?,
+                at: r.get(5)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let sounds = c
+        .prepare(
+            "SELECT so.id, s.name, so.name, so.emoji, so.duration_ms, so.size, so.created_at
+             FROM sounds so JOIN servers s ON s.id = so.server_id
+             WHERE so.uploader_id = ?1 ORDER BY so.created_at",
+        )?
+        .query_map([uid], |r| {
+            Ok(ExportSound {
+                id: r.get(0)?,
+                server: r.get(1)?,
+                name: r.get(2)?,
+                emoji: r.get(3)?,
+                duration_ms: r.get(4)?,
+                size: r.get(5)?,
+                at: r.get(6)?,
+            })
+        })?
         .collect::<Result<_, _>>()?;
     let reports = c
         .prepare(
@@ -706,9 +1070,95 @@ pub fn export_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<ExportRows> {
         .collect::<Result<_, _>>()?;
     Ok(ExportRows {
         messages,
+        reactions,
+        attachments,
+        sounds,
         reports,
         mod_log,
     })
+}
+
+// ---------- Soundpad ----------
+
+pub struct ExportSound {
+    pub id: Uuid,
+    pub server: String,
+    pub name: String,
+    pub emoji: Option<String>,
+    pub duration_ms: i64,
+    pub size: i64,
+    pub at: i64,
+}
+
+pub struct NewSound<'a> {
+    pub id: Uuid,
+    pub server_id: Uuid,
+    pub uploader_id: Uuid,
+    pub name: &'a str,
+    pub emoji: Option<&'a str>,
+    pub duration_ms: u32,
+    pub data: &'a [u8],
+    pub created_at: i64,
+}
+
+pub fn insert_sound(c: &Connection, s: &NewSound) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO sounds (id, server_id, uploader_id, name, emoji, duration_ms, size, created_at, data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            s.id,
+            s.server_id,
+            s.uploader_id,
+            s.name,
+            s.emoji,
+            s.duration_ms,
+            s.data.len() as i64,
+            s.created_at,
+            s.data
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn count_sounds(c: &Connection, server_id: Uuid) -> rusqlite::Result<usize> {
+    c.query_row(
+        "SELECT COUNT(*) FROM sounds WHERE server_id = ?1",
+        [server_id],
+        |r| r.get(0),
+    )
+}
+
+/// (id, nome, emoji, duração em ms)
+pub type SoundRow = (Uuid, String, Option<String>, u32);
+
+/// Metadados dos sons de um servidor (sem quem enviou: não é preciso para tocar).
+pub fn list_sounds(c: &Connection, server_id: Uuid) -> rusqlite::Result<Vec<SoundRow>> {
+    c.prepare_cached(
+        "SELECT id, name, emoji, duration_ms FROM sounds WHERE server_id = ?1 ORDER BY created_at",
+    )?
+    .query_map([server_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?
+    .collect()
+}
+
+/// (servidor, quem enviou) de um som.
+pub fn sound_owner(c: &Connection, id: Uuid) -> rusqlite::Result<Option<(Uuid, Uuid)>> {
+    c.query_row(
+        "SELECT server_id, uploader_id FROM sounds WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+pub fn sound_data(c: &Connection, id: Uuid) -> rusqlite::Result<Option<Vec<u8>>> {
+    c.query_row("SELECT data FROM sounds WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+}
+
+pub fn delete_sound(c: &Connection, id: Uuid) -> rusqlite::Result<bool> {
+    Ok(c.execute("DELETE FROM sounds WHERE id = ?1", [id])? > 0)
 }
 
 // ---------- LGPD: eliminação ----------
@@ -716,7 +1166,11 @@ pub fn export_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<ExportRows> {
 /// Apaga tudo do titular que está no banco (os papéis em servidores são tratados
 /// por quem chama, junto com o cache). Devolve quantas mensagens foram apagadas.
 pub fn delete_user_rows(c: &Connection, uid: Uuid) -> rusqlite::Result<usize> {
+    // Imagens e reações das mensagens apagadas vão junto (ON DELETE CASCADE).
     let removed = c.execute("DELETE FROM messages WHERE author_id = ?1", [uid])?;
+    c.execute("DELETE FROM attachments WHERE uploader_id = ?1", [uid])?;
+    c.execute("DELETE FROM reactions WHERE user_id = ?1", [uid])?;
+    c.execute("DELETE FROM sounds WHERE uploader_id = ?1", [uid])?;
     c.execute("DELETE FROM reports WHERE reporter_id = ?1", [uid])?;
     c.execute("DELETE FROM server_members WHERE user_id = ?1", [uid])?;
     c.execute("DELETE FROM server_moderators WHERE user_id = ?1", [uid])?;

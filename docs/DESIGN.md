@@ -96,8 +96,38 @@ com ponto de status, nome + subtítulo, e ícones microfone / áudio / configura
 ### Mensagens
 - Agrupamento por autor em 5 min; horário aparece no hover.
 - `.date-divider`: linha com a data no centro ("6 de novembro de 2026").
-- Ações da mensagem: barra flutuante no hover, canto superior direito.
-- Futuro: reações em pílula (`--bg-elevated`, borda; a minha com `--accent-soft` e borda accent).
+- Ações da mensagem: barra flutuante no hover, canto superior direito (reagir, responder, editar
+  se for minha, "mais"). O mesmo menu abre com clique direito e, no celular, com toque longo
+  (`longPress` em `app.js`).
+- Reações (`.reaction`): pílula `--bg-elevated` com borda; a minha com `--accent-soft` e borda
+  accent; botão "+" aparece no hover.
+- Resposta (`.reply-preview`): linha curva à esquerda, mini avatar 16 px, nome e trecho; clicar
+  rola até a original e a destaca (`.msg.flash`).
+- Menção (`.mention`): pílula `--accent-soft`; a mim (`.mention.me`) e a linha inteira
+  (`.msg.mentioned`) em amarelo `--warning`.
+- Imagens (`.attachments`): até 420×340; 2+ viram grade; clique abre o visualizador
+  (`.lightbox`). "(editado)" em `.edited`, 11 px faint.
+
+### Compositor
+`.composer-box` carrega a borda (o `#input` não tem). Acima dele, sempre colados:
+`.composer-bar` (respondendo a…), `.upload-chips` (miniaturas com estado enviando/pronto/erro) e
+`.mention-suggest` (lista flutuante). Emoji abre `.emoji-picker`.
+
+### Soundpad (`.soundpad`)
+Painel flutuante acima do painel de voz (ou da barra da chamada): busca + volume no topo,
+navegação por ícones à esquerda (favoritos, servidor, padrão), seções com grade de 3 colunas
+de `.sp-tile` (emoji + nome, 2 linhas no máximo). Favorito = ★ amarela no canto. Clique toca
+para a chamada; clique direito / toque longo: ouvir só para mim, favoritar, apagar (moderação).
+Quem tocou ganha um emoji flutuante (`.sp-bubble`) sobre o avatar.
+
+### Barra da chamada (`.vv-controls`)
+Botões redondos de 48 px (52 no celular) embaixo da chamada: microfone, áudio, câmera, tela,
+Soundpad e desligar (vermelho). Ligado = claro; desligado = `--danger-soft`.
+
+### Sons
+Efeitos sintetizados em `static/sounds.js` (sem arquivos). Curtos (< 0,4 s), discretos, em
+tons do acorde de dó; subir = ligar/entrar, descer = desligar/sair. Todo efeito novo entra em
+`SFX_EVENTS` para poder ser desligado em Configurações › Sons.
 
 ### Lista de membros
 Seções por papel (`DONO — 1`, `MODERAÇÃO — n`, `ONLINE — n`, `OFFLINE — n`), avatar 32 px com
@@ -119,7 +149,7 @@ Tela cheia sobre o app, fundo `--bg-base`:
 - **Prévia** à direita quando faz sentido (cartão do servidor/perfil).
 - **Fechar**: botão circular com "ESC" embaixo; a tecla Esc também fecha.
 Usada em: configurações do servidor (perfil, convites, denúncias, banidos) e do usuário
-(minha conta, voz e vídeo, privacidade e dados).
+(minha conta, voz e vídeo, sons, privacidade e dados).
 
 ### Toast
 Rodapé central, raio padrão; erro = `--danger`, sucesso = `--success`.
@@ -132,4 +162,18 @@ Rodapé central, raio padrão; erro = `--danger`, sucesso = `--success`.
 3. Configuração com várias seções → tela `.settings`; pergunta rápida → diálogo.
 4. Toda tela que coleta ou mostra dado pessoal explica o tratamento e respeita a LGPD
    (ver `docs/LGPD.md`).
-5. Teste em 1280 px, 1000 px (sem lista de membros) e celular (640 px).
+5. Teste em 1440 px, 1000 px (membros viram gaveta) e celular (390 px).
+
+## 5. Celular (até 760 px)
+
+- **Gavetas**: servidores + canais deslizam da esquerda (botão ☰ ou deslizar para a direita);
+  membros deslizam da direita (botão de pessoas ou deslizar para a esquerda). Fundo escurecido
+  (`#scrim`) fecha. Escolher um canal fecha a gaveta. Entre 761 e 1000 px, só os membros são gaveta.
+- **Toque**: alvos de no mínimo 40 px; sem barra de ações no hover. Tudo que é hover no desktop
+  precisa de um caminho por toque longo ou botão visível.
+- **Folhas**: emoji, Soundpad e menus sobem de baixo, na largura toda.
+- **Texto**: campos com 16 px (o iOS dá zoom em fontes menores); teclado não abre sozinho.
+- **Áreas seguras**: `viewport-fit=cover` + `env(safe-area-inset-*)` em cabeçalho, compositor,
+  gavetas e folhas.
+- **Chamada**: uma coluna de blocos e a barra de controles fixa embaixo; transmitir tela some
+  quando o navegador não permite (celulares).

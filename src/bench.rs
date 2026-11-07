@@ -84,13 +84,13 @@ pub fn run(n: usize) {
         let tx = c.transaction().unwrap();
         for _ in 0..10_000.min(n - i) {
             let ms = start_ms + (i as f64 * step) as i64;
-            let m = Message {
-                id: Uuid::new_v7(Timestamp::from_unix(NoContext, (ms / 1000) as u64, (ms % 1000) as u32 * 1_000_000)),
-                channel_id: channels[i % CHANNELS].id,
-                author: users[i % USERS].clone(),
-                content: format!("Mensagem de teste número {i}, com um texto de tamanho parecido com uma conversa real."),
-                timestamp: ms,
-            };
+            let m = Message::new(
+                Uuid::new_v7(Timestamp::from_unix(NoContext, (ms / 1000) as u64, (ms % 1000) as u32 * 1_000_000)),
+                channels[i % CHANNELS].id,
+                users[i % USERS].clone(),
+                format!("Mensagem de teste número {i}, com um texto de tamanho parecido com uma conversa real."),
+                ms,
+            );
             db::insert_message(&tx, &m).unwrap();
             i += 1;
         }
@@ -111,13 +111,13 @@ pub fn run(n: usize) {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        let m = Message {
-            id: Uuid::now_v7(),
-            channel_id: channels[k % CHANNELS].id,
-            author: users[k % USERS].clone(),
-            content: "Mensagem enviada ao vivo.".into(),
-            timestamp: now_ms(),
-        };
+        let m = Message::new(
+            Uuid::now_v7(),
+            channels[k % CHANNELS].id,
+            users[k % USERS].clone(),
+            "Mensagem enviada ao vivo.".into(),
+            now_ms(),
+        );
         db::insert_message(&tx, &m).unwrap();
         tx.commit().unwrap();
     }

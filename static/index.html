@@ -2,8 +2,10 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#121214">
   <title>Concord</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -41,6 +43,10 @@
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             <span>Tela</span>
           </button>
+          <button id="vp-soundpad" class="vp-btn" title="Soundpad">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <span>Sons</span>
+          </button>
         </div>
         <div id="vp-stats" class="vp-stats hidden"></div>
       </div>
@@ -67,14 +73,36 @@
 
     <main id="chat">
       <header id="chat-header">
+        <button id="nav-toggle" class="icon-btn" title="Servidores e canais" aria-label="Abrir servidores e canais">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          <span id="nav-ping" class="nav-ping hidden"></span>
+        </button>
         <span class="hash" id="channel-icon">#</span><span id="channel-name"></span>
         <span id="channel-status" class="channel-status"></span>
+        <button id="members-toggle" class="icon-btn" title="Lista de membros" aria-label="Mostrar ou esconder a lista de membros">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg>
+        </button>
       </header>
       <div id="status" class="hidden"></div>
       <div id="text-view">
         <div id="messages"></div>
         <form id="composer">
-          <textarea id="input" rows="1" maxlength="2000" autocomplete="off"></textarea>
+          <div id="mention-suggest" class="mention-suggest hidden" role="listbox" aria-label="Sugestões de menção"></div>
+          <div id="reply-bar" class="composer-bar hidden">
+            <span id="reply-text"></span>
+            <button type="button" id="reply-cancel" class="icon-btn" title="Cancelar resposta" aria-label="Cancelar resposta">✕</button>
+          </div>
+          <div id="upload-chips" class="upload-chips hidden"></div>
+          <div class="composer-box">
+            <button type="button" id="attach-btn" class="icon-btn" title="Enviar imagem (ou cole / arraste)" aria-label="Enviar imagem">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+            </button>
+            <textarea id="input" rows="1" maxlength="2000" autocomplete="off"></textarea>
+            <button type="button" id="emoji-btn" class="icon-btn" title="Emoji" aria-label="Escolher emoji">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
+            </button>
+          </div>
+          <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
         </form>
         <div id="typing"></div>
       </div>
@@ -82,6 +110,8 @@
       <section id="voice-view" class="hidden"></section>
     </main>
     <div id="voice-audio" hidden></div>
+
+    <div id="scrim" aria-hidden="true"></div>
 
     <aside id="members">
       <div class="section-title"><span id="members-title">Online</span></div>
@@ -103,6 +133,7 @@
           <li>Mensagens ficam visíveis a quem participa do servidor e são apagadas em até <span id="retention-days">180</span> dias.</li>
           <li>Moderadores podem apagar mensagens e banir. Se você denunciar algo, eles não ficam sabendo quem foi.</li>
           <li>Nos canais de voz, áudio, câmera e tela são transmitidos ao vivo e <strong>nunca gravados</strong>.</li>
+          <li>Imagens e sons do Soundpad enviados têm os metadados (como a localização da foto) removidos antes de sair do seu aparelho.</li>
           <li>Você pode baixar ou apagar seus dados quando quiser, em Configurações (engrenagem ao lado do seu nome) → Privacidade e dados.</li>
         </ul>
         <a href="/privacidade" target="_blank" rel="noopener">Ler a Política de Privacidade completa</a>
@@ -133,10 +164,15 @@
     </div>
   </div>
 
+  <!-- Visualizador de imagem -->
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Imagem"></div>
+
   <div id="toast" class="hidden"></div>
 
   <script src="/vendor/livekit-client.umd.js"></script>
   <script src="/app.js"></script>
+  <script src="/chat.js"></script>
+  <script src="/sounds.js"></script>
   <script src="/voice.js"></script>
 </body>
 </html>

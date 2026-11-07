@@ -212,7 +212,75 @@ pub struct Message {
     pub content: String,
     /// Milissegundos desde a época Unix.
     pub timestamp: i64,
+    /// Última edição (só a versão atual é guardada).
+    #[serde(default)]
+    pub edited_at: Option<i64>,
+    /// Mensagem respondida (prévia montada na leitura).
+    #[serde(default)]
+    pub reply_to: Option<ReplyPreview>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionView>,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentView>,
 }
+
+impl Message {
+    pub fn new(id: Uuid, channel_id: Uuid, author: User, content: String, timestamp: i64) -> Self {
+        Message {
+            id,
+            channel_id,
+            author,
+            content,
+            timestamp,
+            edited_at: None,
+            reply_to: None,
+            reactions: vec![],
+            attachments: vec![],
+        }
+    }
+}
+
+/// Prévia da mensagem respondida. `author` nulo: a original foi apagada.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReplyPreview {
+    pub id: Uuid,
+    pub author: Option<User>,
+    pub excerpt: String,
+}
+
+/// Uma reação e quem reagiu (ids pseudônimos).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReactionView {
+    pub emoji: String,
+    pub users: Vec<Uuid>,
+}
+
+/// Imagem anexada. `url` é assinada e expira (o arquivo nunca fica público).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttachmentView {
+    pub id: Uuid,
+    pub url: String,
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Som do Soundpad de um servidor. `url` é assinada e expira.
+#[derive(Clone, Debug, Serialize)]
+pub struct SoundView {
+    pub id: Uuid,
+    pub name: String,
+    pub emoji: Option<String>,
+    pub duration_ms: u32,
+    pub url: String,
+}
+
+/// Sons que já vêm com o Concord (sintetizados no navegador; nada é enviado).
+pub const BUILTIN_SOUNDS: &[&str] = &[
+    "badumtss", "buzina", "trombone", "tada", "moeda", "sino", "grilos", "palmas", "laser", "boing",
+];
 
 pub const REPORT_CATEGORIES: &[&str] = &[
     "spam",
@@ -363,6 +431,46 @@ pub enum ClientMsg {
     SendMessage {
         channel_id: Uuid,
         content: String,
+        #[serde(default)]
+        reply_to: Option<Uuid>,
+        /// Ids de imagens já enviadas por `UploadBegin` + POST /anexos.
+        #[serde(default)]
+        attachments: Vec<Uuid>,
+    },
+    EditMessage {
+        channel_id: Uuid,
+        message_id: Uuid,
+        content: String,
+    },
+    /// Liga (`on`) ou desliga uma reação minha.
+    React {
+        channel_id: Uuid,
+        message_id: Uuid,
+        emoji: String,
+        on: bool,
+    },
+    /// Pede autorização para enviar uma imagem (devolve um token de uso único).
+    UploadBegin {
+        channel_id: Uuid,
+        size: u64,
+    },
+    /// Autorização para POST /sons/{upload_id} (moderação do servidor).
+    SoundUploadBegin {
+        server_id: Uuid,
+        size: u64,
+        name: String,
+        #[serde(default)]
+        emoji: Option<String>,
+    },
+    FetchSounds {
+        server_id: Uuid,
+    },
+    /// `sound`: id de um som do servidor ou `builtin:<nome>`. Só para quem está na voz.
+    PlaySound {
+        sound: String,
+    },
+    DeleteSound {
+        sound_id: Uuid,
     },
     /// Sem `before`: a página mais recente. Com `before`: mensagens anteriores a ela.
     FetchHistory {
@@ -428,6 +536,45 @@ pub enum ServerMsg {
     },
     Message {
         message: Message,
+    },
+    MessageEdited {
+        channel_id: Uuid,
+        message_id: Uuid,
+        content: String,
+        edited_at: i64,
+    },
+    ReactionUpdate {
+        channel_id: Uuid,
+        message_id: Uuid,
+        emoji: String,
+        user_id: Uuid,
+        on: bool,
+    },
+    /// Autorização para POST /anexos/{upload_id}?token=… (vale 2 minutos, uso único).
+    UploadToken {
+        upload_id: Uuid,
+        token: String,
+        max_bytes: u64,
+        /// "image" ou "sound".
+        kind: &'static str,
+    },
+    Sounds {
+        server_id: Uuid,
+        sounds: Vec<SoundView>,
+        /// Quem pode adicionar e apagar sons neste servidor.
+        can_manage: bool,
+        max: usize,
+    },
+    /// A lista de sons mudou: quem a abriu busca de novo.
+    SoundsChanged {
+        server_id: Uuid,
+    },
+    /// Alguém tocou um som num canal de voz.
+    SoundPlayed {
+        server_id: Uuid,
+        channel_id: Uuid,
+        user_id: Uuid,
+        sound: String,
     },
     MessageDeleted {
         channel_id: Uuid,
@@ -526,6 +673,8 @@ pub enum Audience {
 /// O que circula entre as conexões. Cada conexão filtra e monta
 /// a própria visão antes de enviar ao navegador.
 #[derive(Clone, Debug)]
+// Eventos vivem pouco (só o tempo de repassar às conexões); não vale alocar.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Send(Audience, ServerMsg),
     ServerChanged(Uuid),

@@ -9,11 +9,13 @@ use uuid::Uuid;
 use crate::db;
 use crate::model::{
     new_invite_code, Audience, Ban, Channel, ChannelKind, ClientMsg, Event, Message, Report,
-    Server, ServerMsg, User, REPORT_CATEGORIES, VIDEO_QUALITIES,
+    Server, ServerMsg, User, BUILTIN_SOUNDS, REPORT_CATEGORIES, VIDEO_QUALITIES,
 };
+use crate::state::UploadPurpose;
 use crate::state::{
     log, now_ms, AppState, Fail, Res, VoiceSession, HISTORY_PAGE, MAX_CHANNELS_PER_SERVER,
-    MAX_MEMBERS_PER_SERVER, MAX_OWNED_SERVERS, MAX_REPORTS_PER_SERVER, MAX_SERVERS,
+    MAX_MEMBERS_PER_SERVER, MAX_OWNED_SERVERS, MAX_PENDING_UPLOADS, MAX_REPORTS_PER_SERVER,
+    MAX_SERVERS, MAX_SOUNDS_PER_SERVER, MAX_SOUND_BYTES, MAX_UPLOAD_BYTES,
 };
 use crate::ws::Out;
 
@@ -815,22 +817,29 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
         ClientMsg::SendMessage {
             channel_id,
             content,
+            reply_to,
+            attachments,
         } => {
             let content = content.trim();
-            if content.is_empty() {
+            if content.is_empty() && attachments.is_empty() {
                 return Ok(());
             }
             if content.chars().count() > 2000 {
                 return Err("A mensagem passa de 2000 caracteres".into());
             }
-            let message = Message {
-                id: Uuid::now_v7(),
+            if attachments.len() > MAX_ATTACHMENTS {
+                return Err(
+                    format!("Envie no máximo {MAX_ATTACHMENTS} imagens por mensagem").into(),
+                );
+            }
+            let mut message = Message::new(
+                Uuid::now_v7(),
                 channel_id,
-                author: cx.me.clone(),
-                content: content.to_string(),
-                timestamp: now_ms(),
-            };
-            let sid = st.mutate(|cache, tx| {
+                cx.me.clone(),
+                content.to_string(),
+                now_ms(),
+            );
+            let (sid, message) = st.mutate(|cache, tx| {
                 let i = cache
                     .server_index_of_channel(channel_id)
                     .ok_or("Canal não encontrado")?;
@@ -844,12 +853,267 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 {
                     return Err("Canais de voz não têm chat de texto".into());
                 }
+                if let Some(rid) = reply_to {
+                    message.reply_to = Some(
+                        db::reply_preview(tx, channel_id, rid)?
+                            .ok_or("A mensagem respondida não existe mais")?,
+                    );
+                }
                 db::insert_message(tx, &message)?;
-                Ok(cache.servers[i].id)
+                for a in &attachments {
+                    // Só imagens enviadas por esta pessoa, para este canal, ainda não usadas.
+                    if !db::link_attachment(tx, *a, message.id, uid, channel_id)? {
+                        return Err("Imagem inválida ou expirada; envie de novo".into());
+                    }
+                }
+                let sign = |id: Uuid| st.sign_attachment(id);
+                db::hydrate(tx, std::slice::from_mut(&mut message), &sign)?;
+                Ok((cache.servers[i].id, message))
             })?;
             st.emit(Event::Send(
                 Audience::Server(sid),
                 ServerMsg::Message { message },
+            ));
+        }
+
+        // Só o autor edita; guarda apenas a versão atual (minimização).
+        ClientMsg::EditMessage {
+            channel_id,
+            message_id,
+            content,
+        } => {
+            let content = content.trim().to_string();
+            if content.is_empty() {
+                return Err("A mensagem não pode ficar vazia (para remover, apague-a)".into());
+            }
+            if content.chars().count() > 2000 {
+                return Err("A mensagem passa de 2000 caracteres".into());
+            }
+            let at = now_ms();
+            let sid = st.mutate(|cache, tx| {
+                let i = cache
+                    .server_index_of_channel(channel_id)
+                    .ok_or("Canal não encontrado")?;
+                if !cache.servers[i].can_view(uid) {
+                    return no_permission();
+                }
+                let author = db::message_author(tx, channel_id, message_id)?
+                    .ok_or("Mensagem não encontrada")?;
+                if author != uid {
+                    return Err("Só quem escreveu pode editar".into());
+                }
+                db::edit_message(tx, message_id, &content, at)?;
+                Ok(cache.servers[i].id)
+            })?;
+            st.emit(Event::Send(
+                Audience::Server(sid),
+                ServerMsg::MessageEdited {
+                    channel_id,
+                    message_id,
+                    content,
+                    edited_at: at,
+                },
+            ));
+        }
+
+        ClientMsg::React {
+            channel_id,
+            message_id,
+            emoji,
+            on,
+        } => {
+            if !valid_emoji(&emoji) {
+                return Err("Reação inválida".into());
+            }
+            let (sid, changed) = st.mutate(|cache, tx| {
+                let i = cache
+                    .server_index_of_channel(channel_id)
+                    .ok_or("Canal não encontrado")?;
+                if !cache.servers[i].can_view(uid) {
+                    return no_permission();
+                }
+                db::message_author(tx, channel_id, message_id)?.ok_or("Mensagem não encontrada")?;
+                if on
+                    && !db::has_reaction(tx, message_id, &emoji)?
+                    && db::reaction_emoji_count(tx, message_id)? >= MAX_REACTION_EMOJIS
+                {
+                    return Err(format!(
+                        "Limite de {MAX_REACTION_EMOJIS} reações diferentes por mensagem"
+                    )
+                    .into());
+                }
+                let changed = db::set_reaction(tx, message_id, uid, &emoji, on, now_ms())?;
+                Ok((cache.servers[i].id, changed))
+            })?;
+            if changed {
+                st.emit(Event::Send(
+                    Audience::Server(sid),
+                    ServerMsg::ReactionUpdate {
+                        channel_id,
+                        message_id,
+                        emoji,
+                        user_id: uid,
+                        on,
+                    },
+                ));
+            }
+        }
+
+        // Autorização de uso único para enviar uma imagem por HTTP (o segredo de
+        // identidade nunca trafega fora do WebSocket).
+        ClientMsg::UploadBegin { channel_id, size } => {
+            if size == 0 || size > MAX_UPLOAD_BYTES {
+                return Err(format!(
+                    "A imagem deve ter até {} MB",
+                    MAX_UPLOAD_BYTES / 1024 / 1024
+                )
+                .into());
+            }
+            {
+                let cache = st.cache.lock().unwrap();
+                let i = cache
+                    .server_index_of_channel(channel_id)
+                    .ok_or("Canal não encontrado")?;
+                let s = &cache.servers[i];
+                if !s.can_view(uid) {
+                    return no_permission();
+                }
+                if s.channels
+                    .iter()
+                    .any(|c| c.id == channel_id && c.kind == ChannelKind::Voice)
+                {
+                    return Err("Canais de voz não têm chat de texto".into());
+                }
+            }
+            if st.read(|c| db::count_pending_attachments(c, uid))? >= MAX_PENDING_UPLOADS {
+                return Err(
+                    "Muitas imagens aguardando envio; envie a mensagem ou espere um pouco".into(),
+                );
+            }
+            let (upload_id, token) = st.grant_upload(uid, UploadPurpose::Image { channel_id });
+            cx.send(ServerMsg::UploadToken {
+                upload_id,
+                token,
+                max_bytes: MAX_UPLOAD_BYTES,
+                kind: "image",
+            });
+        }
+
+        // ---------- Soundpad ----------
+        ClientMsg::FetchSounds { server_id } => {
+            let can_manage = {
+                let cache = st.cache.lock().unwrap();
+                let s = cache.server(server_id).ok_or("Servidor não encontrado")?;
+                if !s.can_view(uid) {
+                    return no_permission();
+                }
+                s.can_moderate(uid, admin)
+            };
+            cx.send(ServerMsg::Sounds {
+                server_id,
+                sounds: st.sounds(server_id)?,
+                can_manage,
+                max: MAX_SOUNDS_PER_SERVER,
+            });
+        }
+
+        // Como no Discord, quem modera o servidor cuida dos sons.
+        ClientMsg::SoundUploadBegin {
+            server_id,
+            size,
+            name,
+            emoji,
+        } => {
+            if size == 0 || size > MAX_SOUND_BYTES {
+                return Err("O som deve ter até 5 segundos".into());
+            }
+            let name = clean_text(&name).chars().take(32).collect::<String>();
+            if name.is_empty() {
+                return Err("Dê um nome ao som".into());
+            }
+            let emoji = emoji.filter(|e| !e.is_empty());
+            if emoji.as_deref().is_some_and(|e| !valid_emoji(e)) {
+                return Err("Emoji inválido".into());
+            }
+            {
+                let cache = st.cache.lock().unwrap();
+                let s = cache.server(server_id).ok_or("Servidor não encontrado")?;
+                if !s.can_moderate(uid, admin) {
+                    return no_permission();
+                }
+            }
+            if st.read(|c| db::count_sounds(c, server_id))? >= MAX_SOUNDS_PER_SERVER {
+                return Err(format!(
+                    "Este servidor já tem {MAX_SOUNDS_PER_SERVER} sons; apague algum para adicionar outro"
+                )
+                .into());
+            }
+            let (upload_id, token) = st.grant_upload(
+                uid,
+                UploadPurpose::Sound {
+                    server_id,
+                    name,
+                    emoji,
+                },
+            );
+            cx.send(ServerMsg::UploadToken {
+                upload_id,
+                token,
+                max_bytes: MAX_SOUND_BYTES,
+                kind: "sound",
+            });
+        }
+
+        ClientMsg::DeleteSound { sound_id } => {
+            let (server_id, uploader) = st
+                .read(|c| db::sound_owner(c, sound_id))?
+                .ok_or("Som não encontrado")?;
+            {
+                let cache = st.cache.lock().unwrap();
+                let s = cache.server(server_id).ok_or("Servidor não encontrado")?;
+                if !s.can_moderate(uid, admin) && !(uploader == uid && s.can_view(uid)) {
+                    return no_permission();
+                }
+            }
+            st.mutate(|_, tx| Ok(db::delete_sound(tx, sound_id)?))?;
+            st.emit(Event::Send(
+                Audience::Server(server_id),
+                ServerMsg::SoundsChanged { server_id },
+            ));
+        }
+
+        // Só quem está num canal de voz toca sons, e só para aquele canal.
+        ClientMsg::PlaySound { sound } => {
+            let Some(session) = st.voice_sessions.lock().unwrap().get(&uid).cloned() else {
+                return Err("Entre num canal de voz para usar o Soundpad".into());
+            };
+            let (muted, deafened) = st.server_mute_of(session.server_id, uid);
+            if muted || deafened {
+                return Err("Um moderador silenciou você neste servidor".into());
+            }
+            let valid = match sound.strip_prefix("builtin:") {
+                Some(name) => BUILTIN_SOUNDS.contains(&name),
+                None => match sound.parse::<Uuid>() {
+                    Ok(id) => st
+                        .read(|c| db::sound_owner(c, id))?
+                        .is_some_and(|(sid, _)| sid == session.server_id),
+                    Err(_) => false,
+                },
+            };
+            if !valid {
+                return Err("Som não encontrado".into());
+            }
+            if !st.sound_allowed(uid) {
+                return Ok(()); // cliques rápidos demais: ignora em silêncio
+            }
+            st.emit(Event::Send(
+                Audience::Server(session.server_id),
+                ServerMsg::SoundPlayed {
+                    server_id: session.server_id,
+                    channel_id: session.channel_id,
+                    user_id: uid,
+                    sound,
+                },
             ));
         }
 
@@ -864,7 +1128,7 @@ pub fn handle(cmd: ClientMsg, cx: &mut Ctx) -> Res<()> {
                 }
             }
             // Pede uma a mais para saber se ainda há mensagens antigas.
-            let mut messages = st.read(|c| db::history(c, channel_id, before, HISTORY_PAGE + 1))?;
+            let mut messages = st.history(channel_id, before, HISTORY_PAGE + 1)?;
             let has_more = messages.len() > HISTORY_PAGE;
             if has_more {
                 messages.remove(0);
@@ -1062,6 +1326,25 @@ fn check_can_act_on(st: &AppState, s: &Server, actor: Uuid, admin: bool, target:
         return no_permission();
     }
     Ok(())
+}
+
+const MAX_ATTACHMENTS: usize = 4;
+const MAX_REACTION_EMOJIS: usize = 20;
+
+/// Reação: um emoji (pode ter modificadores de tom, ZWJ e seletores de variação).
+/// Recusa texto comum, espaços e caracteres de controle.
+fn valid_emoji(e: &str) -> bool {
+    let n = e.chars().count();
+    (1..=12).contains(&n)
+        && e.len() <= 48
+        && !e.is_ascii()
+        && e.chars().all(|c| {
+            !c.is_control()
+                && !c.is_whitespace()
+                && !c.is_ascii_alphanumeric()
+                && c != '<'
+                && c != '>'
+        })
 }
 
 /// Remove caracteres de controle e espaços nas pontas.

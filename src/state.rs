@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::db::{self, Cache, Db, UserRecord};
 use crate::model::{
-    new_invite_code, Audience, BanView, Channel, ChannelKind, Event, ModLogEntry, ReportView,
-    Server, ServerMsg, ServerView, User, VoiceStateView,
+    new_invite_code, Audience, BanView, Channel, ChannelKind, Event, Message, ModLogEntry,
+    ReportView, Server, ServerMsg, ServerView, User, VoiceStateView,
 };
 use crate::voice::LiveKit;
 
@@ -34,8 +34,20 @@ pub struct VoiceSession {
 
 /// Versão da política de privacidade. Aumente ao mudar a política:
 /// todos precisarão aceitar de novo (LGPD art. 8º, §6º e art. 9º, §2º).
-pub const POLICY_VERSION: u32 = 3;
-pub const POLICY_UPDATED_AT: &str = "06/11/2026";
+pub const POLICY_VERSION: u32 = 5;
+/// Tamanho máximo de uma imagem enviada.
+pub const MAX_UPLOAD_BYTES: u64 = 8 * 1024 * 1024;
+/// Imagens pendentes (enviadas e ainda não usadas) por pessoa.
+pub const MAX_PENDING_UPLOADS: usize = 8;
+/// Validade de um token de envio de imagem.
+const UPLOAD_TOKEN_MS: i64 = 120_000;
+/// Tamanho máximo de um som do Soundpad (WAV de até ~5 s).
+pub const MAX_SOUND_BYTES: u64 = 1_100_000;
+/// Sons por servidor.
+pub const MAX_SOUNDS_PER_SERVER: usize = 48;
+/// Intervalo mínimo entre dois sons tocados pela mesma pessoa.
+pub const SOUND_COOLDOWN_MS: i64 = 1_500;
+pub const POLICY_UPDATED_AT: &str = "07/11/2026";
 
 /// Quantas mensagens o cliente recebe por página de histórico.
 pub const HISTORY_PAGE: usize = 50;
@@ -245,6 +257,40 @@ pub struct AppState {
     /// Silenciados/ensurdecidos pela moderação: (servidor, pessoa) -> (mudo, surdo).
     /// Só em memória; vale até um moderador desfazer ou o Concord reiniciar.
     pub server_mutes: Mutex<HashMap<(Uuid, Uuid), (bool, bool)>>,
+    /// Chave (nova a cada execução) que assina os links das imagens.
+    url_secret: [u8; 32],
+    /// Autorizações de envio de imagem: upload_id -> concessão (uso único).
+    upload_grants: Mutex<HashMap<Uuid, UploadGrant>>,
+    /// Último som tocado por pessoa (anti-spam do Soundpad). Só em memória.
+    pub sound_cooldown: Mutex<HashMap<Uuid, i64>>,
+}
+
+/// Para que serve uma autorização de envio.
+pub enum UploadPurpose {
+    Image {
+        channel_id: Uuid,
+    },
+    Sound {
+        server_id: Uuid,
+        name: String,
+        emoji: Option<String>,
+    },
+}
+
+/// Autorização de uso único para enviar uma imagem por HTTP.
+pub struct UploadGrant {
+    pub token: String,
+    pub user_id: Uuid,
+    pub purpose: UploadPurpose,
+    pub max_bytes: u64,
+    pub expires: i64,
+}
+
+fn random_bytes32() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    out[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    out
 }
 
 /// Executa uma chamada ao LiveKit em segundo plano (não trava o chat).
@@ -305,6 +351,9 @@ impl AppState {
             voice,
             voice_sessions: Mutex::new(HashMap::new()),
             server_mutes: Mutex::new(HashMap::new()),
+            url_secret: random_bytes32(),
+            upload_grants: Mutex::new(HashMap::new()),
+            sound_cooldown: Mutex::new(HashMap::new()),
         })
     }
 
@@ -494,6 +543,127 @@ impl AppState {
         result
     }
 
+    // ---------- imagens: links assinados e envio ----------
+
+    /// `kind` separa os domínios: um link de imagem não vale como link de som.
+    fn url_mac(&self, kind: &str, id: Uuid, exp: i64) -> String {
+        use base64::Engine;
+        use hmac::{Hmac, Mac};
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&self.url_secret).expect("chave HMAC");
+        mac.update(format!("{kind}.{id}.{exp}").as_bytes());
+        let tag = mac.finalize().into_bytes();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tag[..16])
+    }
+
+    /// Link da imagem, válido por ~24 h (alinhado à hora, para o navegador aproveitar o cache).
+    pub fn sign_attachment(&self, id: Uuid) -> String {
+        let exp = (now_ms() / 3_600_000 + 25) * 3600;
+        format!(
+            "/anexos/{id}?exp={exp}&sig={}",
+            self.url_mac("anexo", id, exp)
+        )
+    }
+
+    /// Link de um som do Soundpad, no mesmo esquema das imagens.
+    pub fn sign_sound(&self, id: Uuid) -> String {
+        let exp = (now_ms() / 3_600_000 + 25) * 3600;
+        format!("/sons/{id}?exp={exp}&sig={}", self.url_mac("som", id, exp))
+    }
+
+    pub fn verify_attachment(&self, id: Uuid, exp: i64, sig: &str) -> bool {
+        self.verify_link("anexo", id, exp, sig)
+    }
+
+    pub fn verify_sound(&self, id: Uuid, exp: i64, sig: &str) -> bool {
+        self.verify_link("som", id, exp, sig)
+    }
+
+    fn verify_link(&self, kind: &str, id: Uuid, exp: i64, sig: &str) -> bool {
+        if exp * 1000 < now_ms() {
+            return false;
+        }
+        let expected = self.url_mac(kind, id, exp);
+        // Comparação em tempo constante.
+        expected.len() == sig.len()
+            && expected
+                .bytes()
+                .zip(sig.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+    }
+
+    pub fn grant_upload(&self, user_id: Uuid, purpose: UploadPurpose) -> (Uuid, String) {
+        let max_bytes = match purpose {
+            UploadPurpose::Image { .. } => MAX_UPLOAD_BYTES,
+            UploadPurpose::Sound { .. } => MAX_SOUND_BYTES,
+        };
+        let id = Uuid::new_v4();
+        let token = Uuid::new_v4().simple().to_string() + &Uuid::new_v4().simple().to_string();
+        let now = now_ms();
+        let mut grants = self.upload_grants.lock().unwrap();
+        grants.retain(|_, g| g.expires > now);
+        grants.insert(
+            id,
+            UploadGrant {
+                token: token.clone(),
+                user_id,
+                purpose,
+                max_bytes,
+                expires: now + UPLOAD_TOKEN_MS,
+            },
+        );
+        (id, token)
+    }
+
+    /// Consome a autorização (uso único). `None` se inválida ou vencida.
+    pub fn take_upload(&self, id: Uuid, token: &str) -> Option<UploadGrant> {
+        let mut grants = self.upload_grants.lock().unwrap();
+        let g = grants.remove(&id)?;
+        (g.token == token && g.expires > now_ms()).then_some(g)
+    }
+
+    /// Sons de um servidor, com links assinados.
+    pub fn sounds(&self, server_id: Uuid) -> Res<Vec<crate::model::SoundView>> {
+        let rows = self.read(|c| db::list_sounds(c, server_id))?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, emoji, duration_ms)| crate::model::SoundView {
+                url: self.sign_sound(id),
+                id,
+                name,
+                emoji,
+                duration_ms,
+            })
+            .collect())
+    }
+
+    /// Anti-spam: no máximo um som a cada `SOUND_COOLDOWN_MS` por pessoa.
+    pub fn sound_allowed(&self, uid: Uuid) -> bool {
+        let now = now_ms();
+        let mut m = self.sound_cooldown.lock().unwrap();
+        m.retain(|_, t| now - *t < SOUND_COOLDOWN_MS);
+        if m.contains_key(&uid) {
+            return false;
+        }
+        m.insert(uid, now);
+        true
+    }
+
+    /// Página de histórico já com reações e imagens (links assinados).
+    pub fn history(
+        &self,
+        channel_id: Uuid,
+        before: Option<Uuid>,
+        limit: usize,
+    ) -> Res<Vec<Message>> {
+        let sign = |id: Uuid| self.sign_attachment(id);
+        self.read(|c| {
+            let mut list = db::history(c, channel_id, before, limit)?;
+            db::hydrate(c, &mut list, &sign)?;
+            Ok(list)
+        })
+    }
+
     /// Leitura no banco (em paralelo com as escritas).
     pub fn read<T>(&self, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> Res<T> {
         Ok(self.db.read(f)?)
@@ -655,9 +825,54 @@ impl AppState {
         let mensagens: Vec<_> = rows
             .messages
             .iter()
-            .map(|(id, srv, ch, content, at)| json!({
-                "id": id, "servidor": srv, "canal": ch, "conteudo": content, "enviada_em": iso_utc(*at),
-            }))
+            .map(|m| {
+                json!({
+                    "id": m.id,
+                    "servidor": m.server,
+                    "canal": m.channel,
+                    "conteudo": m.content,
+                    "enviada_em": iso_utc(m.at),
+                    "editada_em": m.edited_at.map(iso_utc),
+                    "resposta_a": m.reply_to,
+                })
+            })
+            .collect();
+        let reacoes: Vec<_> = rows
+            .reactions
+            .iter()
+            .map(|(mid, emoji, at)| json!({ "mensagem_id": mid, "emoji": emoji, "em": iso_utc(*at) }))
+            .collect();
+        // Portabilidade: cada imagem tem um link para baixar, válido por ~24 h.
+        let imagens: Vec<_> = rows
+            .attachments
+            .iter()
+            .map(|a| {
+                json!({
+                    "id": a.id,
+                    "mensagem_id": a.message_id,
+                    "arquivo": a.filename,
+                    "tipo": a.mime,
+                    "bytes": a.size,
+                    "enviada_em": iso_utc(a.at),
+                    "link_para_baixar": a.message_id.map(|_| self.sign_attachment(a.id)),
+                })
+            })
+            .collect();
+        let sons: Vec<_> = rows
+            .sounds
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id,
+                    "servidor": s.server,
+                    "nome": s.name,
+                    "emoji": s.emoji,
+                    "duracao_ms": s.duration_ms,
+                    "bytes": s.size,
+                    "enviado_em": iso_utc(s.at),
+                    "link_para_baixar": self.sign_sound(s.id),
+                })
+            })
             .collect();
         let servidores: Vec<_> = cache
             .servers
@@ -728,6 +943,10 @@ impl AppState {
             "dados_nao_coletados": "Não armazenamos IP, e-mail, telefone, localização nem dados de navegação.",
             "servidores": servidores,
             "mensagens": mensagens,
+            "reacoes": reacoes,
+            "imagens": imagens,
+            "imagens_observacao": "Os links valem por cerca de 24 horas e são relativos ao endereço do Concord. Metadados (como localização) são removidos no envio.",
+            "sons_do_soundpad": sons,
             "denuncias_feitas": denuncias,
             "banimentos_recebidos": banimentos,
             "registro_de_moderacao": moderacao,
@@ -839,6 +1058,8 @@ impl AppState {
         let online: HashSet<Uuid> = self.online.lock().unwrap().values().map(|u| u.id).collect();
         let result = self.mutate(|cache, tx| {
             let counts = db::purge_small_tables(tx, cutoff)?;
+            // Imagens enviadas e não usadas numa mensagem em 1 hora.
+            db::purge_pending_attachments(tx, now_ms() - 3_600_000)?;
             let inactive: Vec<Uuid> = db::inactive_users(tx, cutoff)?
                 .into_iter()
                 .filter(|id| !online.contains(id))
@@ -930,13 +1151,7 @@ pub mod tests {
         let u = user("Antigo");
         st.register_user(&u, 2).unwrap();
         let ch = st.cache.lock().unwrap().servers[0].channels[0].id;
-        let msg = Message {
-            id: Uuid::now_v7(),
-            channel_id: ch,
-            author: u.clone(),
-            content: "oi".into(),
-            timestamp: now_ms(),
-        };
+        let msg = Message::new(Uuid::now_v7(), ch, u.clone(), "oi".into(), now_ms());
         st.mutate(|_, tx| Ok(db::insert_message(tx, &msg)?))
             .unwrap();
         let novo = User {
@@ -961,13 +1176,7 @@ pub mod tests {
         // A alteração muda o cache e depois o banco falha (canal inexistente na FK).
         let r: Res<()> = st.mutate(|cache, tx| {
             cache.servers.clear();
-            let bad = Message {
-                id: Uuid::now_v7(),
-                channel_id: Uuid::new_v4(),
-                author: user("x"),
-                content: "x".into(),
-                timestamp: 0,
-            };
+            let bad = Message::new(Uuid::now_v7(), Uuid::new_v4(), user("x"), "x".into(), 0);
             db::insert_message(tx, &bad)?;
             Ok(())
         });

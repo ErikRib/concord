@@ -22,6 +22,16 @@ exportação, eliminação, retenção, política (subir `POLICY_VERSION` se mud
 - **Moderação de voz:** silenciar e ensurdecer pelo servidor, mover e desconectar, aplicados no
   LiveKit e testados contra um cliente que tenta burlar
 
+- **Chat completo:** reações, edição, respostas, menções com aviso, imagens (sem metadados, links
+  assinados), seletor de emoji, visualizador. Política v4
+
+- **Sons e Soundpad:** efeitos sonoros da interface (mensagem, menção, entrar/sair da chamada,
+  alguém entrou/saiu, mutar, transmitir, queda e volta da conexão), configuráveis. Soundpad por
+  servidor com sons padrão sintetizados, favoritos, recentes, busca e volume próprio. Política v5
+
+- **Celular:** gavetas com deslize, toque longo nas mensagens, folhas de baixo para emoji, menus e
+  Soundpad, barra de controles da chamada, áreas seguras do iPhone
+
 ### Pendente na voz
 - Medir a fluidez de 60 fps numa máquina com GPU (`HEADED=1 node tests/media.mjs`)
 - App de desktop (Tauri e SDK nativo do LiveKit) para igualar o Discord de desktop em 1440p e 4K
