@@ -1,0 +1,58 @@
+# Verificação a cada push e pull request: formatação, lint, testes de unidade e ponta a ponta.
+# Os testes de voz do e2e são pulados (não há LiveKit no CI); o teste de mídia real roda localmente.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust estável
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Formatação
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Testes de unidade
+        run: cargo test --locked
+
+      - name: Compilar
+        run: cargo build --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Teste de ponta a ponta
+        env:
+          PORT: "3999"
+          CONCORD_DB: /tmp/concord-e2e.db
+          CONCORD_DATA: /tmp/nao-existe.json
+          CONCORD_CONTROLADOR: "Teste <Ltda>"
+          CONCORD_CONTATO: dpo@exemplo.com
+          CONCORD_LIVEKIT_BIN: /nao-existe
+        run: |
+          export CONCORD_ADMINS=$(node tests/e2e.mjs --admin-id)
+          ./target/debug/concord > /tmp/concord.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:3999/ > /dev/null && break; sleep 1; done
+          node tests/e2e.mjs 3999 || { cat /tmp/concord.log; exit 1; }

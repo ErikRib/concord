@@ -32,6 +32,16 @@ exportação, eliminação, retenção, política (subir `POLICY_VERSION` se mud
 - **Celular:** gavetas com deslize, toque longo nas mensagens, folhas de baixo para emoji, menus e
   Soundpad, barra de controles da chamada, áreas seguras do iPhone
 
+- **Arquivos:** qualquer tipo até 25 MB (vídeo e áudio com player, o resto para baixar), GIF colado
+  mantém a animação (busca do original com proteção contra SSRF), localização removida de vídeos
+  MP4/MOV. Política v6
+
+- **Transmissão de tela:** quem assiste recebe a qualidade original, áudio da transmissão sem
+  filtros de voz e com volume próprio, codec automático com GPU. Volumes viram barras
+
+- **Repositório e documentação:** GitHub com CI (formatação, lint, testes e ponta a ponta),
+  arquitetura, guia de desenvolvimento, voz, segurança e contribuição
+
 ### Pendente na voz
 - Medir a fluidez de 60 fps numa máquina com GPU (`HEADED=1 node tests/media.mjs`)
 - App de desktop (Tauri e SDK nativo do LiveKit) para igualar o Discord de desktop em 1440p e 4K
